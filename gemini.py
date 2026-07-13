@@ -26,13 +26,17 @@ class GeminiBusyError(Exception):
 def build_gemini_prompt(genre: str, artists: list[dict]) -> str:
     artist_list = "\n".join(f"{i}. {artist['name']}" for i, artist in enumerate(artists, start=1))
     return (
-        f"Here is an ordered list of top artists that I listen to:\n{artist_list}\n\n"
-        f"I'd like to explore the {genre} genre. Based on this list, recommend artists "
-        f"in that genre that I might enjoy.  At the end of the prose list, please "
-        f"provide a JSON array of the recommended artists, where each artist is an "
-        f"object with a 'name' field, each recommended album is a sub-object  of the artist "
-        f"with a 'title' field, and each recommended track is a sub-object of the album with "
-        f"a 'title' field. "
+        f"Here is an ordered list of top artists that a last.fm user listens to:\n{artist_list}\n\n"
+        f"They'd like to explore the {genre} genre. Based on this list, recommend artists "
+        f"in that genre that they might enjoy. Start the reply with a brief paragraph or "
+        f"two reflecting the user's artists back to them, and then decribing "
+        f"why the recommended list fits their taste. At the end of the prose, provide a "
+        f"JSON array of the recommended artists, where each artist is an "
+        f"object with a 'name' field, a 'description' field describing their style or "
+        f"characteristics, and a 'fit' field explaining why the artist fits their taste. "
+        f"For each artist, also include one or two recommended albums as a sub-object "
+        f"of the artist with a 'title' field, and two or three recommended tracks "
+        f"where each is a sub-object of the album with a 'title' field. "
     )
 
 

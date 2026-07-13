@@ -54,14 +54,32 @@ def fetch_artists():
     if not artists:
         return jsonify({"error": f"No top artists found for user '{username}'."}), 404
 
-    counts: Counter = Counter()
-    for artist in artists:
-        try:
-            counts.update(get_artist_top_tags(artist["name"], api_key))
-        except (requests.RequestException, RuntimeError):
-            pass
+    return jsonify({"artists": artists})
 
-    return jsonify({"artists": artists, "tag_counts": counts.most_common()})
+
+@app.route("/fetch-tag-counts", methods=["POST"])
+def fetch_tag_counts():
+    data = request.get_json(silent=True) or {}
+    artist_names = data.get("artist_names") or []
+
+    api_key = os.environ.get("LASTFM_API_KEY")
+    if not api_key:
+        return jsonify({"error": "Server is missing the LASTFM_API_KEY environment variable."}), 500
+
+    def generate():
+        counts: Counter = Counter()
+        for name in artist_names:
+            try:
+                counts.update(get_artist_top_tags(name, api_key))
+            except Exception:
+                pass
+            yield f"data: {json.dumps({'artist': name, 'tag_counts': counts.most_common()})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/chart-top-tags", methods=["GET"])

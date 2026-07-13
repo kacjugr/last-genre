@@ -25,8 +25,8 @@
     .col-r { text-align: right; }
     .col-rank { text-align: right; width: 2rem; }
     .scroll-box tbody td.col-rank { color: #888; }
-    #chart-tags-list tbody tr { cursor: pointer; }
-    #chart-tags-list tbody tr:hover { background: #f0f4ff; }
+    #chart-tags-list tbody tr, #tag-counts-list tbody tr { cursor: pointer; }
+    #chart-tags-list tbody tr:hover, #tag-counts-list tbody tr:hover { background: #f0f4ff; }
     @media (max-width: 720px) {
       .results-grid { grid-template-columns: 1fr; }
       .recs-panel { border-left: none; padding-left: 0; border-top: 1px solid #ddd; padding-top: 1.5rem; }
@@ -65,6 +65,10 @@
       <p id="chart-tags-status" style="display:none;"></p>
       <div id="chart-tags-list" style="display:none;"></div>
 
+      <h2>Tag frequency across your artists</h2>
+      <p id="tag-counts-status" style="display:none;"></p>
+      <div id="tag-counts-list"></div>
+
       <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #ddd;">
       <h2>Genre Recommendations</h2>
       <div style="display: grid; gap: 0.75rem; margin-bottom: 1rem;">
@@ -98,13 +102,12 @@
         } catch (e) { return null; }
       }
 
-      function saveCache(username, limit, period, artists, tag_counts) {
+      function saveCache(username, limit, period, update) {
         try {
-          localStorage.setItem(cacheKey(username, limit, period), JSON.stringify({
-            artists: artists,
-            tag_counts: tag_counts,
-            fetchedAt: Date.now(),
-          }));
+          var key = cacheKey(username, limit, period);
+          var existing = loadCache(username, limit, period) || { fetchedAt: Date.now() };
+          for (var k in update) existing[k] = update[k];
+          localStorage.setItem(key, JSON.stringify(existing));
         } catch (e) {}
       }
 
@@ -147,27 +150,77 @@
         return '<div class="scroll-box"><table><thead><tr>' + ths + '</tr></thead><tbody>' + trs + '</tbody></table></div>';
       }
 
-      function renderResults(entry, username, period) {
-        currentArtists = entry.artists.map(function (a) { return a.name; });
-
-        var artistCols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}, {label: 'Plays', cls: 'col-r'}];
-        var artistRows = entry.artists.map(function (a, i) { return [i + 1, esc(a.name), a.playcount]; });
-        var html = '<div class="section"><h2>Top ' + entry.artists.length +
-          ' artists for ' + esc(username) + ' (' + esc(period) + ')</h2>' +
-          makeTable(artistCols, artistRows) + '</div>';
-
-        if (entry.tag_counts && entry.tag_counts.length) {
-          var tagCols = [{label: '#', cls: 'col-rank'}, {label: 'Tag'}, {label: 'Count', cls: 'col-r'}];
-          var tagRows = entry.tag_counts.map(function (pair, i) { return [i + 1, esc(pair[0]), pair[1]]; });
-          html += '<div class="section"><h2>Tag frequency across these artists</h2>' +
-            makeTable(tagCols, tagRows) + '</div>';
-        }
-
-        document.getElementById('results-left').innerHTML = html;
-
+      function renderArtists(artists, username, period) {
+        currentArtists = artists.map(function (a) { return a.name; });
+        var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}, {label: 'Plays', cls: 'col-r'}];
+        var rows = artists.map(function (a, i) { return [i + 1, esc(a.name), a.playcount]; });
+        document.getElementById('results-left').innerHTML =
+          '<div class="section"><h2>Top ' + artists.length + ' artists for ' +
+          esc(username) + ' (' + esc(period) + ')</h2>' + makeTable(cols, rows) + '</div>';
         document.getElementById('gemini-status').style.display = 'none';
         document.getElementById('gemini-reply').style.display = 'none';
         document.getElementById('gemini-reply').textContent = '';
+      }
+
+      function renderTagCounts(tag_counts) {
+        var el = document.getElementById('tag-counts-list');
+        if (!el) return;
+        if (!tag_counts || !tag_counts.length) { el.innerHTML = ''; return; }
+        var cols = [{label: '#', cls: 'col-rank'}, {label: 'Tag'}, {label: 'Count', cls: 'col-r'}];
+        var rows = tag_counts.map(function (pair, i) { return [i + 1, esc(pair[0]), pair[1]]; });
+        el.innerHTML = '<div class="section">' +
+          makeTable(cols, rows) + '</div>';
+      }
+
+      function fetchTagCounts(artistNames, v) {
+        var statusEl = document.getElementById('tag-counts-status');
+        statusEl.textContent = 'Fetching tags…';
+        statusEl.style.display = 'block';
+        var lastTagCounts = null;
+
+        fetch('/fetch-tag-counts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ artist_names: artistNames }),
+        })
+          .then(function (res) {
+            if (!res.ok) {
+              return res.text().then(function (body) {
+                try { body = JSON.parse(body).error || body; } catch (e) {}
+                statusEl.textContent = 'Tag frequency error: ' + body;
+              });
+            }
+            var reader = res.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+
+            function read() {
+              reader.read().then(function (chunk) {
+                if (chunk.done) {
+                  statusEl.style.display = 'none';
+                  if (lastTagCounts) saveCache(v.username, v.limit, v.period, { tag_counts: lastTagCounts });
+                  return;
+                }
+                buffer += decoder.decode(chunk.value, { stream: true });
+                var lines = buffer.split('\n');
+                buffer = lines.pop();
+                lines.forEach(function (line) {
+                  if (line.slice(0, 6) !== 'data: ') return;
+                  try {
+                    var ev = JSON.parse(line.slice(6));
+                    statusEl.textContent = 'Fetching tags for ' + ev.artist + '…';
+                    lastTagCounts = ev.tag_counts;
+                    renderTagCounts(ev.tag_counts);
+                  } catch (e) {}
+                });
+                read();
+              });
+            }
+            read();
+          })
+          .catch(function (err) {
+            statusEl.textContent = 'Tag frequency error: ' + err;
+          });
       }
 
       function getFormValues() {
@@ -182,9 +235,14 @@
         var v = getFormValues();
         if (!v.username) { lastFetchedAt = null; updateButton(); return; }
         var entry = loadCache(v.username, v.limit, v.period);
-        if (entry) {
-          renderResults(entry, v.username, v.period);
+        if (entry && entry.artists) {
+          renderArtists(entry.artists, v.username, v.period);
           lastFetchedAt = entry.fetchedAt;
+          if (entry.tag_counts) {
+            renderTagCounts(entry.tag_counts);
+          } else {
+            fetchTagCounts(entry.artists.map(function (a) { return a.name; }), v);
+          }
         } else {
           document.getElementById('results-left').innerHTML = '';
           lastFetchedAt = null;
@@ -231,10 +289,11 @@
               updateButton();
               return;
             }
-            saveCache(v.username, v.limit, v.period, data.artists, data.tag_counts);
             lastFetchedAt = Date.now();
-            renderResults({ artists: data.artists, tag_counts: data.tag_counts }, v.username, v.period);
+            saveCache(v.username, v.limit, v.period, { artists: data.artists, tag_counts: null, fetchedAt: lastFetchedAt });
+            renderArtists(data.artists, v.username, v.period);
             updateButton();
+            fetchTagCounts(data.artists.map(function (a) { return a.name; }), v);
           })
           .catch(function (err) {
             btn.disabled = false;
@@ -256,12 +315,15 @@
       var chartTagsStatus = document.getElementById('chart-tags-status');
       var chartTagsList = document.getElementById('chart-tags-list');
 
-      chartTagsList.addEventListener('click', function (e) {
+      function onTagRowClick(e) {
         var row = e.target.closest('tr');
         if (!row || row.closest('thead')) return;
         var cells = row.querySelectorAll('td');
         if (cells[1]) document.getElementById('genre').value = cells[1].textContent;
-      });
+      }
+
+      chartTagsList.addEventListener('click', onTagRowClick);
+      document.getElementById('tag-counts-list').addEventListener('click', onTagRowClick);
 
       function renderChartTags(tags) {
         var cols = [{label: '#', cls: 'col-rank'}, {label: 'Tag'}, {label: 'Count', cls: 'col-r'}];
