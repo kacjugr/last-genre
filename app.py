@@ -15,63 +15,51 @@ load_dotenv()
 app = Flask(__name__)
 
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/", methods=["GET"])
 def index():
     form = {
-        "username": "",
-        "limit": 10,
+        "username": "kacjugr",
+        "limit": 50,
         "period": "overall",
-        "genre": "",
     }
-    error = None
-    artists = None
-    tag_counts = None
+    return render_template("index.html", period_choices=PERIOD_CHOICES, form=form)
 
-    if request.method == "POST":
-        form["username"] = request.form.get("username", "").strip()
-        form["period"] = request.form.get("period", "overall")
-        form["genre"] = request.form.get("genre", "").strip()
 
+@app.route("/fetch-artists", methods=["POST"])
+def fetch_artists():
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    period = data.get("period", "overall")
+    try:
+        limit = int(data.get("limit", 50))
+    except (ValueError, TypeError):
+        limit = 50
+
+    if not username:
+        return jsonify({"error": "Please enter a Last.fm username."}), 400
+    if period not in PERIOD_CHOICES:
+        return jsonify({"error": "Invalid period selected."}), 400
+
+    api_key = os.environ.get("LASTFM_API_KEY")
+    if not api_key:
+        return jsonify({"error": "Server is missing the LASTFM_API_KEY environment variable."}), 500
+
+    try:
+        artists = get_top_artists(username, api_key, limit, period)
+    except (requests.RequestException, RuntimeError) as e:
+        return jsonify({"error": f"Could not fetch top artists: {e}"}), 500
+
+    if not artists:
+        return jsonify({"error": f"No top artists found for user '{username}'."}), 404
+
+    counts: Counter = Counter()
+    for artist in artists:
         try:
-            form["limit"] = int(request.form.get("limit", 10))
-        except ValueError:
-            form["limit"] = 10
+            counts.update(get_top_tags(artist["name"], api_key))
+        except (requests.RequestException, RuntimeError):
+            pass
 
-        if not form["username"]:
-            error = "Please enter a Last.fm username."
-        elif form["period"] not in PERIOD_CHOICES:
-            error = "Invalid period selected."
-        else:
-            api_key = os.environ.get("LASTFM_API_KEY")
-            if not api_key:
-                error = "Server is missing the LASTFM_API_KEY environment variable."
-            else:
-                try:
-                    artists = get_top_artists(form["username"], api_key, form["limit"], form["period"])
-                except (requests.RequestException, RuntimeError) as e:
-                    error = f"Could not fetch top artists: {e}"
-                    artists = None
-
-        if artists is not None:
-            if not artists:
-                error = f"No top artists found for user '{form['username']}'."
-            else:
-                counts: Counter = Counter()
-                for artist in artists:
-                    try:
-                        counts.update(get_top_tags(artist["name"], api_key))
-                    except (requests.RequestException, RuntimeError):
-                        pass
-                tag_counts = counts.most_common()
-
-    return render_template(
-        "index.html",
-        period_choices=PERIOD_CHOICES,
-        form=form,
-        error=error,
-        artists=artists,
-        tag_counts=tag_counts,
-    )
+    return jsonify({"artists": artists, "tag_counts": counts.most_common(10)})
 
 
 @app.route("/gemini", methods=["POST"])
