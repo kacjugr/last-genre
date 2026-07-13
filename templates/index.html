@@ -27,30 +27,30 @@
 <body>
   <h1>Last.fm Top Artists</h1>
 
-  <div id="fetch-error" class="error" style="display:none;"></div>
-
-  <form id="fetch-form">
+  <div class="results-grid" id="results-grid">
     <div>
-      <label for="username">Last.fm username</label>
-      <input type="text" id="username" name="username" value="{{ form.username }}" required>
+      <div id="fetch-error" class="error" style="display:none;"></div>
+      <form id="fetch-form">
+        <div>
+          <label for="username">Last.fm username</label>
+          <input type="text" id="username" name="username" value="{{ form.username }}" required>
+        </div>
+        <div>
+          <label for="limit">Number of artists</label>
+          <input type="number" id="limit" name="limit" min="1" max="100" value="{{ form.limit }}">
+        </div>
+        <div>
+          <label for="period">Period</label>
+          <select id="period" name="period">
+            {% for choice in period_choices %}
+              <option value="{{ choice }}" {% if choice == form.period %}selected{% endif %}>{{ choice }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" id="fetch-btn">Fetch</button>
+      </form>
+      <div id="results-left"></div>
     </div>
-    <div>
-      <label for="limit">Number of artists</label>
-      <input type="number" id="limit" name="limit" min="1" max="100" value="{{ form.limit }}">
-    </div>
-    <div>
-      <label for="period">Period</label>
-      <select id="period" name="period">
-        {% for choice in period_choices %}
-          <option value="{{ choice }}" {% if choice == form.period %}selected{% endif %}>{{ choice }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <button type="submit" id="fetch-btn">Fetch</button>
-  </form>
-
-  <div class="results-grid" id="results-grid" style="display:none;">
-    <div id="results-left"></div>
     <div class="section recs-panel">
       <h2>Genre Recommendations</h2>
       <div style="display: grid; gap: 0.75rem; margin-bottom: 1rem;">
@@ -64,6 +64,11 @@
       </div>
       <p id="gemini-status" style="display:none;"></p>
       <pre id="gemini-reply" style="display:none;"></pre>
+
+      <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #ddd;">
+      <h3 style="margin-top: 0;">Global Top Tags</h3>
+      <p id="chart-tags-status" style="display:none;"></p>
+      <ul id="chart-tags-list" style="display:none; max-height: 14em; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 0.4rem 0.4rem 0.4rem 1.75rem; margin: 0;"></ul>
     </div>
   </div>
 
@@ -124,23 +129,25 @@
         currentArtists = entry.artists.map(function (a) { return a.name; });
 
         var html = '<div class="section"><h2>Top ' + entry.artists.length +
-          ' artists for ' + esc(username) + ' (' + esc(period) + ')</h2><ol>';
+          ' artists for ' + esc(username) + ' (' + esc(period) + ')</h2>' +
+          '<ol style="max-height: 14em; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 0.4rem 0.4rem 0.4rem 1.75rem; margin: 0;">';
         entry.artists.forEach(function (a) {
           html += '<li>' + esc(a.name) + ' (' + a.playcount + ' plays)</li>';
         });
         html += '</ol></div>';
 
         if (entry.tag_counts && entry.tag_counts.length) {
-          html += '<div class="section"><h2>Tag frequency across these artists</h2><table>';
+          html += '<div class="section"><h2>Tag frequency across these artists</h2>' +
+            '<div style="max-height: 14em; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 0.25rem 0.5rem;">' +
+            '<table>';
           entry.tag_counts.forEach(function (pair) {
             // pair: [tag, count]
             html += '<tr><td>' + pair[1] + '</td><td>' + esc(pair[0]) + '</td></tr>';
           });
-          html += '</table></div>';
+          html += '</table></div></div>';
         }
 
         document.getElementById('results-left').innerHTML = html;
-        document.getElementById('results-grid').style.display = 'grid';
 
         document.getElementById('gemini-status').style.display = 'none';
         document.getElementById('gemini-reply').style.display = 'none';
@@ -163,7 +170,7 @@
           renderResults(entry, v.username, v.period);
           lastFetchedAt = entry.fetchedAt;
         } else {
-          document.getElementById('results-grid').style.display = 'none';
+          document.getElementById('results-left').innerHTML = '';
           lastFetchedAt = null;
         }
         updateButton();
@@ -227,6 +234,58 @@
       var statusEl = document.getElementById('gemini-status');
       var replyEl = document.getElementById('gemini-reply');
 
+      // Global chart top tags — loaded automatically on page load
+      var CHART_TAGS_KEY = 'lastgenre_v1_chart_tags';
+      var CHART_TAGS_TTL = 60 * 1000;
+      var chartTagsStatus = document.getElementById('chart-tags-status');
+      var chartTagsList = document.getElementById('chart-tags-list');
+
+      function renderChartTags(tags) {
+        chartTagsList.innerHTML = '';
+        tags.forEach(function (tag) {
+          var li = document.createElement('li');
+          li.textContent = tag.name + ' (' + Number(tag.count).toLocaleString() + ')';
+          chartTagsList.appendChild(li);
+        });
+        chartTagsList.style.display = 'block';
+        chartTagsStatus.style.display = 'none';
+      }
+
+      function fetchChartTags() {
+        chartTagsStatus.textContent = 'Loading…';
+        chartTagsStatus.style.display = 'block';
+
+        fetch('/chart-top-tags')
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (data.error) {
+              chartTagsStatus.textContent = 'Error: ' + data.error;
+              return;
+            }
+            try {
+              localStorage.setItem(CHART_TAGS_KEY, JSON.stringify({ tags: data.tags, fetchedAt: Date.now() }));
+            } catch (e) {}
+            renderChartTags(data.tags);
+          })
+          .catch(function (err) {
+            chartTagsStatus.textContent = 'Error: ' + err;
+          });
+      }
+
+      (function () {
+        try {
+          var raw = localStorage.getItem(CHART_TAGS_KEY);
+          if (raw) {
+            var cached = JSON.parse(raw);
+            if (Date.now() - cached.fetchedAt < CHART_TAGS_TTL) {
+              renderChartTags(cached.tags);
+              return;
+            }
+          }
+        } catch (e) {}
+        fetchChartTags();
+      })();
+
       geminiBtn.addEventListener('click', function () {
         var genre = genreInput.value.trim();
         if (!genre) { genreInput.focus(); return; }
@@ -243,35 +302,65 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ genre: genre, artists: currentArtists }),
         })
-          .then(function (res) { return res.json(); })
-          .then(function (data) {
-            geminiBtn.disabled = false;
-            if (data.error) {
-              statusEl.textContent = 'Error: ' + data.error;
-              return;
+          .then(function (res) {
+            var reader = res.body.getReader();
+            var decoder = new TextDecoder();
+            var buffer = '';
+
+            function handleEvent(ev) {
+              switch (ev.type) {
+                case 'trying':
+                  statusEl.textContent = 'Asking Gemini… (attempt ' + ev.attempt + ')';
+                  break;
+                case 'waiting':
+                  statusEl.textContent = 'Gemini busy — retrying in ' + ev.remaining + 's…';
+                  break;
+                case 'trying_fallback':
+                  statusEl.textContent = 'Trying backup model…';
+                  break;
+                case 'done':
+                  geminiBtn.disabled = false;
+                  if (ev.fallback) {
+                    statusEl.textContent =
+                      "Gemini's main model was busy after " + ev.retries +
+                      (ev.retries === 1 ? ' retry' : ' retries') +
+                      ', so the backup model answered instead:';
+                  } else if (ev.retries > 0) {
+                    statusEl.textContent =
+                      'Gemini was busy, but responded after ' + ev.retries +
+                      (ev.retries === 1 ? ' retry' : ' retries') + ':';
+                  } else {
+                    statusEl.style.display = 'none';
+                  }
+                  replyEl.textContent = ev.reply;
+                  replyEl.style.display = 'block';
+                  break;
+                case 'busy':
+                  geminiBtn.disabled = false;
+                  statusEl.textContent = 'Gemini is busy right now. Please try again in a bit.';
+                  break;
+                case 'error':
+                  geminiBtn.disabled = false;
+                  statusEl.textContent = 'Error: ' + ev.message;
+                  break;
+              }
             }
-            if (data.busy) {
-              statusEl.textContent =
-                'Gemini is busy right now (tried ' + (data.retries + 1) +
-                (data.retries === 0 ? ' time' : ' times') +
-                (data.fallback ? ', including the backup model' : '') +
-                '). Please try again in a bit.';
-              return;
+
+            function read() {
+              reader.read().then(function (chunk) {
+                if (chunk.done) return;
+                buffer += decoder.decode(chunk.value, { stream: true });
+                var lines = buffer.split('\n');
+                buffer = lines.pop();
+                lines.forEach(function (line) {
+                  if (line.slice(0, 6) === 'data: ') {
+                    try { handleEvent(JSON.parse(line.slice(6))); } catch (e) {}
+                  }
+                });
+                read();
+              });
             }
-            if (data.fallback) {
-              statusEl.textContent =
-                "Gemini's main model was busy after " + data.retries +
-                (data.retries === 1 ? ' retry' : ' retries') +
-                ', so the backup model answered instead:';
-            } else if (data.retries > 0) {
-              statusEl.textContent =
-                'Gemini was busy, but responded after ' + data.retries +
-                (data.retries === 1 ? ' retry' : ' retries') + ':';
-            } else {
-              statusEl.style.display = 'none';
-            }
-            replyEl.textContent = data.reply;
-            replyEl.style.display = 'block';
+            read();
           })
           .catch(function (err) {
             geminiBtn.disabled = false;

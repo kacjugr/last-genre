@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Web app for exploring a Last.fm user's top artists and genre recommendations."""
 
+import json
 import os
 from collections import Counter
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
-from lastfm import GeminiBusyError, PERIOD_CHOICES, ask_gemini_with_retry, build_gemini_prompt, get_top_artists, get_top_tags
+from gemini import ask_gemini_with_retry_streaming, build_gemini_prompt
+from lastfm import PERIOD_CHOICES, get_artist_top_tags, get_chart_top_tags, get_user_top_artists
 
 load_dotenv()
 
@@ -45,7 +47,7 @@ def fetch_artists():
         return jsonify({"error": "Server is missing the LASTFM_API_KEY environment variable."}), 500
 
     try:
-        artists = get_top_artists(username, api_key, limit, period)
+        artists = get_user_top_artists(username, api_key, limit, period)
     except (requests.RequestException, RuntimeError) as e:
         return jsonify({"error": f"Could not fetch top artists: {e}"}), 500
 
@@ -55,11 +57,25 @@ def fetch_artists():
     counts: Counter = Counter()
     for artist in artists:
         try:
-            counts.update(get_top_tags(artist["name"], api_key))
+            counts.update(get_artist_top_tags(artist["name"], api_key))
         except (requests.RequestException, RuntimeError):
             pass
 
-    return jsonify({"artists": artists, "tag_counts": counts.most_common(10)})
+    return jsonify({"artists": artists, "tag_counts": counts.most_common()})
+
+
+@app.route("/chart-top-tags", methods=["GET"])
+def chart_top_tags():
+    api_key = os.environ.get("LASTFM_API_KEY")
+    if not api_key:
+        return jsonify({"error": "Server is missing the LASTFM_API_KEY environment variable."}), 500
+
+    try:
+        tags = get_chart_top_tags(api_key)
+    except (requests.RequestException, RuntimeError) as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({"tags": tags})
 
 
 @app.route("/gemini", methods=["POST"])
@@ -76,14 +92,19 @@ def gemini():
         return jsonify({"error": "Server is missing the LASTFMRECS_GEMINI_API_KEY environment variable."}), 500
 
     prompt = build_gemini_prompt(genre, [{"name": name} for name in artist_names])
-    try:
-        reply, retries, used_fallback = ask_gemini_with_retry(prompt, gemini_api_key)
-    except GeminiBusyError as e:
-        return jsonify({"busy": True, "retries": e.retries, "fallback": e.tried_fallback})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
-    return jsonify({"reply": reply, "retries": retries, "fallback": used_fallback})
+    def generate():
+        try:
+            for event in ask_gemini_with_retry_streaming(prompt, gemini_api_key):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":
