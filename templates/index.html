@@ -18,6 +18,13 @@
     pre { white-space: pre-wrap; background: #f5f5f5; padding: 1rem; border-radius: 4px; }
     .results-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; align-items: start; }
     .recs-panel { border-left: 1px solid #ddd; padding-left: 2rem; }
+    .scroll-box { max-height: 14em; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; }
+    .scroll-box table { width: 100%; border-collapse: collapse; }
+    .scroll-box th { position: sticky; top: 0; background: #f5f5f5; box-shadow: 0 1px 0 #ddd; padding: 0.25rem 0.5rem; }
+    .scroll-box td { padding: 0.2rem 0.5rem; }
+    .col-r { text-align: right; }
+    .col-rank { text-align: right; width: 2rem; }
+    .scroll-box tbody td.col-rank { color: #888; }
     @media (max-width: 720px) {
       .results-grid { grid-template-columns: 1fr; }
       .recs-panel { border-left: none; padding-left: 0; border-top: 1px solid #ddd; padding-top: 1.5rem; }
@@ -37,7 +44,7 @@
         </div>
         <div>
           <label for="limit">Number of artists</label>
-          <input type="number" id="limit" name="limit" min="1" max="100" value="{{ form.limit }}">
+          <input type="number" id="limit" name="limit" min="1" max="250" value="{{ form.limit }}">
         </div>
         <div>
           <label for="period">Period</label>
@@ -68,7 +75,7 @@
       <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #ddd;">
       <h3 style="margin-top: 0;">Global Top Tags</h3>
       <p id="chart-tags-status" style="display:none;"></p>
-      <ul id="chart-tags-list" style="display:none; max-height: 14em; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 0.4rem 0.4rem 0.4rem 1.75rem; margin: 0;"></ul>
+      <div id="chart-tags-list" style="display:none;"></div>
     </div>
   </div>
 
@@ -125,26 +132,33 @@
           .replace(/>/g, '&gt;');
       }
 
+      // cols: [{label, cls?}]  rows: array of cell-value arrays (pre-escaped)
+      function makeTable(cols, rows) {
+        var ths = cols.map(function (c) {
+          return '<th' + (c.cls ? ' class="' + c.cls + '"' : '') + '>' + c.label + '</th>';
+        }).join('');
+        var trs = rows.map(function (cells) {
+          return '<tr>' + cells.map(function (cell, j) {
+            return '<td' + (cols[j].cls ? ' class="' + cols[j].cls + '"' : '') + '>' + cell + '</td>';
+          }).join('') + '</tr>';
+        }).join('');
+        return '<div class="scroll-box"><table><thead><tr>' + ths + '</tr></thead><tbody>' + trs + '</tbody></table></div>';
+      }
+
       function renderResults(entry, username, period) {
         currentArtists = entry.artists.map(function (a) { return a.name; });
 
+        var artistCols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}, {label: 'Plays', cls: 'col-r'}];
+        var artistRows = entry.artists.map(function (a, i) { return [i + 1, esc(a.name), a.playcount]; });
         var html = '<div class="section"><h2>Top ' + entry.artists.length +
           ' artists for ' + esc(username) + ' (' + esc(period) + ')</h2>' +
-          '<ol style="max-height: 14em; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 0.4rem 0.4rem 0.4rem 1.75rem; margin: 0;">';
-        entry.artists.forEach(function (a) {
-          html += '<li>' + esc(a.name) + ' (' + a.playcount + ' plays)</li>';
-        });
-        html += '</ol></div>';
+          makeTable(artistCols, artistRows) + '</div>';
 
         if (entry.tag_counts && entry.tag_counts.length) {
+          var tagCols = [{label: '#', cls: 'col-rank'}, {label: 'Tag'}, {label: 'Count', cls: 'col-r'}];
+          var tagRows = entry.tag_counts.map(function (pair, i) { return [i + 1, esc(pair[0]), pair[1]]; });
           html += '<div class="section"><h2>Tag frequency across these artists</h2>' +
-            '<div style="max-height: 14em; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 0.25rem 0.5rem;">' +
-            '<table>';
-          entry.tag_counts.forEach(function (pair) {
-            // pair: [tag, count]
-            html += '<tr><td>' + pair[1] + '</td><td>' + esc(pair[0]) + '</td></tr>';
-          });
-          html += '</table></div></div>';
+            makeTable(tagCols, tagRows) + '</div>';
         }
 
         document.getElementById('results-left').innerHTML = html;
@@ -241,12 +255,9 @@
       var chartTagsList = document.getElementById('chart-tags-list');
 
       function renderChartTags(tags) {
-        chartTagsList.innerHTML = '';
-        tags.forEach(function (tag) {
-          var li = document.createElement('li');
-          li.textContent = tag.name + ' (' + Number(tag.count).toLocaleString() + ')';
-          chartTagsList.appendChild(li);
-        });
+        var cols = [{label: '#', cls: 'col-rank'}, {label: 'Tag'}, {label: 'Count', cls: 'col-r'}];
+        var rows = tags.map(function (tag, i) { return [i + 1, esc(tag.name), Number(tag.count).toLocaleString()]; });
+        chartTagsList.innerHTML = makeTable(cols, rows);
         chartTagsList.style.display = 'block';
         chartTagsStatus.style.display = 'none';
       }
