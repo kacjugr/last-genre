@@ -1,6 +1,7 @@
-1. fetch Last.fm top tags, and add them as suggestions options for the genre recommendations input.
-    a. maybe a better source than Last.fm, since their tags are not necessarily genres
-    b. options for top genres based on overall/year/month?
+1. genre recommendations top tags list.
+    Xa. fetch Last.fm top tags, and add them as suggestions options for the genre recommendations input.
+    b. maybe a better source than Last.fm, since their tags are not necessarily genres
+    c. options for top genres based on overall/year/month?
 
 X2. Add caching last.fm fetch of a user's top artists.
     a. localStorage vs cookies?

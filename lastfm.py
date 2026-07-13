@@ -11,7 +11,29 @@ TAGS_PER_ARTIST = 5
 NON_GENRE_TAGS = frozenset([
     "seen live",
     "soundtrack",
-    "bookmark"
+    "bookmark",
+    "love",
+    "beautiful",
+    "cover",
+    "favorites",
+    "favorite",
+    "mellow",
+    "albums i own",
+    "awesome",
+    "fip",
+    "all",
+    "sexy",
+    "female",
+    "melancholic",
+    "melancholy",
+    "epic",
+    "cool",
+    "romantic",
+    "sad",
+    "etherial",
+    "dark",
+    "live",
+    "remix"
 ])
 
 
