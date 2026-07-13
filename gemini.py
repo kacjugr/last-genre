@@ -28,7 +28,11 @@ def build_gemini_prompt(genre: str, artists: list[dict]) -> str:
     return (
         f"Here is an ordered list of top artists that I listen to:\n{artist_list}\n\n"
         f"I'd like to explore the {genre} genre. Based on this list, recommend artists "
-        f"in that genre that I might enjoy."
+        f"in that genre that I might enjoy.  At the end of the prose list, please "
+        f"provide a JSON array of the recommended artists, where each artist is an "
+        f"object with a 'name' field, each recommended album is a sub-object  of the artist "
+        f"with a 'title' field, and each recommended track is a sub-object of the album with "
+        f"a 'title' field. "
     )
 
 

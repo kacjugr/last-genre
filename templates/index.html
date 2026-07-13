@@ -25,6 +25,8 @@
     .col-r { text-align: right; }
     .col-rank { text-align: right; width: 2rem; }
     .scroll-box tbody td.col-rank { color: #888; }
+    #chart-tags-list tbody tr { cursor: pointer; }
+    #chart-tags-list tbody tr:hover { background: #f0f4ff; }
     @media (max-width: 720px) {
       .results-grid { grid-template-columns: 1fr; }
       .recs-panel { border-left: none; padding-left: 0; border-top: 1px solid #ddd; padding-top: 1.5rem; }
@@ -59,6 +61,11 @@
       <div id="results-left"></div>
     </div>
     <div class="section recs-panel">
+      <h2>Global Top Tags</h2>
+      <p id="chart-tags-status" style="display:none;"></p>
+      <div id="chart-tags-list" style="display:none;"></div>
+
+      <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #ddd;">
       <h2>Genre Recommendations</h2>
       <div style="display: grid; gap: 0.75rem; margin-bottom: 1rem;">
         <div>
@@ -71,11 +78,6 @@
       </div>
       <p id="gemini-status" style="display:none;"></p>
       <pre id="gemini-reply" style="display:none;"></pre>
-
-      <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #ddd;">
-      <h3 style="margin-top: 0;">Global Top Tags</h3>
-      <p id="chart-tags-status" style="display:none;"></p>
-      <div id="chart-tags-list" style="display:none;"></div>
     </div>
   </div>
 
@@ -253,6 +255,13 @@
       var CHART_TAGS_TTL = 60 * 1000;
       var chartTagsStatus = document.getElementById('chart-tags-status');
       var chartTagsList = document.getElementById('chart-tags-list');
+
+      chartTagsList.addEventListener('click', function (e) {
+        var row = e.target.closest('tr');
+        if (!row || row.closest('thead')) return;
+        var cells = row.querySelectorAll('td');
+        if (cells[1]) document.getElementById('genre').value = cells[1].textContent;
+      });
 
       function renderChartTags(tags) {
         var cols = [{label: '#', cls: 'col-rank'}, {label: 'Tag'}, {label: 'Count', cls: 'col-r'}];
