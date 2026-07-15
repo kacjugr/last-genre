@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Last.fm Top Artists</title>
+  <title>User Recommendations Bot</title>
   <style>
     body { font-family: sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #222; }
     h1 { font-size: 1.4rem; }
@@ -22,6 +22,13 @@
     .scroll-box table { width: 100%; border-collapse: collapse; }
     .scroll-box th { position: sticky; top: 0; background: #f5f5f5; box-shadow: 0 1px 0 #ddd; padding: 0.25rem 0.5rem; }
     .scroll-box td { padding: 0.2rem 0.5rem; }
+    .service-toggle { display: inline-flex; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; margin-bottom: 1rem; }
+    .service-toggle button { padding: 0.4rem 1rem; border: none; background: #f5f5f5; cursor: pointer; font: inherit; }
+    .service-toggle button + button { border-left: 1px solid #ddd; }
+    .service-toggle button.active { background: #222; color: #fff; }
+    .radio-group { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; }
+    .radio-group label { font-weight: normal; display: inline-flex; align-items: center; gap: 0.3rem; width: auto; }
+    .source-label { margin: 0 0 0.5rem; font-size: 0.75rem; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; color: #888; }
     .col-r { text-align: right; }
     .col-rank { text-align: right; width: 2rem; }
     .scroll-box tbody td.col-rank { color: #888; }
@@ -34,33 +41,62 @@
   </style>
 </head>
 <body>
-  <h1>Last.fm Top Artists</h1>
+  <h1>User's Top Artists</h1>
 
   <div class="results-grid" id="results-grid">
     <div>
+      <div class="service-toggle" id="service-toggle" role="group" aria-label="Data source" data-spotify-connected="{{ 'true' if spotify_connected else 'false' }}">
+        <button type="button" class="active" data-service="lastfm">Last.fm</button>
+        <button type="button" data-service="spotify">Spotify</button>
+      </div>
       <div id="fetch-error" class="error" style="display:none;"></div>
+      <div id="spotify-error" class="error"{% if not spotify_error %} style="display:none;"{% endif %}>{{ spotify_error or '' }}</div>
+      <div id="spotify-connect" style="display:none;">
+        <p>Connect your Spotify account to fetch your top artists.</p>
+        <a href="/spotify/login"><button type="button">Connect Spotify</button></a>
+      </div>
+      <div id="spotify-disconnect" style="display:none; margin-bottom: 0.75rem;">
+        <button type="button" id="spotify-disconnect-btn">Disconnect Spotify</button>
+      </div>
       <form id="fetch-form">
-        <div>
-          <label for="username">Last.fm username</label>
-          <input type="text" id="username" name="username" value="{{ form.username }}" required>
+        <div id="lastfm-fields">
+          <div>
+            <label for="username">Last.fm username</label>
+            <input type="text" id="username" name="username" value="{{ form.username }}" required>
+          </div>
+          <div>
+            <label for="period">Period</label>
+            <select id="period" name="period">
+              {% for choice in period_choices %}
+                <option value="{{ choice }}" {% if choice == form.period %}selected{% endif %}>{{ choice }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div id="spotify-fields" style="display:none;">
+          <div>
+            <label for="time_range">Time range</label>
+            <select id="time_range" name="time_range">
+              {% for choice in spotify_time_range_choices %}
+                <option value="{{ choice }}" {% if choice == 'long_term' %}selected{% endif %}>{{ choice }}</option>
+              {% endfor %}
+            </select>
+          </div>
         </div>
         <div>
-          <label for="limit">Number of artists</label>
-          <input type="number" id="limit" name="limit" min="1" max="250" value="{{ form.limit }}">
-        </div>
-        <div>
-          <label for="period">Period</label>
-          <select id="period" name="period">
-            {% for choice in period_choices %}
-              <option value="{{ choice }}" {% if choice == form.period %}selected{% endif %}>{{ choice }}</option>
+          <label>Number of artists</label>
+          <div class="radio-group" id="limit-group">
+            {% for choice in limit_choices %}
+              <label><input type="radio" name="limit" value="{{ choice }}" {% if choice == form.limit %}checked{% endif %}> {{ choice }}</label>
             {% endfor %}
-          </select>
+          </div>
         </div>
         <button type="submit" id="fetch-btn">Fetch</button>
       </form>
       <div id="results-left"></div>
     </div>
     <div class="section recs-panel">
+      <p class="source-label">Last.fm Genre Tags</p>
       <h2>Global Top Tags</h2>
       <p id="chart-tags-status" style="display:none;"></p>
       <div id="chart-tags-list" style="display:none;"></div>
@@ -88,24 +124,73 @@
   <script>
     (function () {
       var CACHE_PREFIX = 'lastgenre_v1_';
+      var SERVICE_KEY = 'lastgenre_v1_service';
       var currentArtists = [];
       var lastFetchedAt = null;
+      var serviceToggle = document.getElementById('service-toggle');
+      var spotifyConnected = serviceToggle.dataset.spotifyConnected === 'true';
+      var selectedService = (localStorage.getItem(SERVICE_KEY) === 'spotify') ? 'spotify' : 'lastfm';
 
-      function cacheKey(username, limit, period) {
+      function updateServiceUI() {
+        var isSpotify = selectedService === 'spotify';
+        serviceToggle.querySelectorAll('button').forEach(function (b) {
+          b.classList.toggle('active', b.dataset.service === selectedService);
+        });
+        document.getElementById('lastfm-fields').style.display = isSpotify ? 'none' : '';
+        document.getElementById('spotify-fields').style.display = isSpotify ? '' : 'none';
+        document.getElementById('username').required = !isSpotify;
+
+        var needsConnect = isSpotify && !spotifyConnected;
+        document.getElementById('spotify-connect').style.display = needsConnect ? 'block' : 'none';
+        document.getElementById('spotify-disconnect').style.display = (isSpotify && spotifyConnected) ? 'block' : 'none';
+        document.getElementById('fetch-form').style.display = needsConnect ? 'none' : '';
+
+        document.getElementById('fetch-error').style.display = 'none';
+      }
+
+      document.getElementById('spotify-disconnect-btn').addEventListener('click', function () {
+        try {
+          Object.keys(localStorage).forEach(function (k) {
+            if (k.indexOf('spotify_v1_') === 0) localStorage.removeItem(k);
+          });
+        } catch (e) {}
+        window.location.href = '/spotify/logout';
+      });
+
+      serviceToggle.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-service]');
+        if (!btn || btn.classList.contains('active')) return;
+        selectedService = btn.dataset.service;
+        try { localStorage.setItem(SERVICE_KEY, selectedService); } catch (e) {}
+        document.getElementById('spotify-error').style.display = 'none';
+        updateServiceUI();
+        if (selectedService === 'spotify') {
+          applySpotifyCache();
+        } else {
+          applyCache();
+        }
+      });
+
+      updateServiceUI();
+
+      function lastfmCacheKey(username, limit, period) {
         return CACHE_PREFIX + username + '_' + limit + '_' + period;
       }
 
-      function loadCache(username, limit, period) {
+      function spotifyCacheKey(limit, timeRange) {
+        return 'spotify_v1_' + limit + '_' + timeRange.replace('_term', '');
+      }
+
+      function loadCache(key) {
         try {
-          var raw = localStorage.getItem(cacheKey(username, limit, period));
+          var raw = localStorage.getItem(key);
           return raw ? JSON.parse(raw) : null;
         } catch (e) { return null; }
       }
 
-      function saveCache(username, limit, period, update) {
+      function saveCache(key, update) {
         try {
-          var key = cacheKey(username, limit, period);
-          var existing = loadCache(username, limit, period) || { fetchedAt: Date.now() };
+          var existing = loadCache(key) || { fetchedAt: Date.now() };
           for (var k in update) existing[k] = update[k];
           localStorage.setItem(key, JSON.stringify(existing));
         } catch (e) {}
@@ -162,6 +247,18 @@
         document.getElementById('gemini-reply').textContent = '';
       }
 
+      function renderSpotifyArtists(artists, displayName, timeRange) {
+        currentArtists = artists.map(function (a) { return a.name; });
+        var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}];
+        var rows = artists.map(function (a, i) { return [i + 1, esc(a.name)]; });
+        document.getElementById('results-left').innerHTML =
+          '<div class="section"><h2>Top ' + artists.length + ' artists for ' +
+          esc(displayName) + ' (' + esc(timeRange) + ')</h2>' + makeTable(cols, rows) + '</div>';
+        document.getElementById('gemini-status').style.display = 'none';
+        document.getElementById('gemini-reply').style.display = 'none';
+        document.getElementById('gemini-reply').textContent = '';
+      }
+
       function renderTagCounts(tag_counts) {
         var el = document.getElementById('tag-counts-list');
         if (!el) return;
@@ -172,7 +269,7 @@
           makeTable(cols, rows) + '</div>';
       }
 
-      function fetchTagCounts(artistNames, v) {
+      function fetchTagCounts(artistNames, cacheKeyStr) {
         var statusEl = document.getElementById('tag-counts-status');
         statusEl.textContent = 'Fetching tags…';
         statusEl.style.display = 'block';
@@ -198,7 +295,7 @@
               reader.read().then(function (chunk) {
                 if (chunk.done) {
                   statusEl.style.display = 'none';
-                  if (lastTagCounts) saveCache(v.username, v.limit, v.period, { tag_counts: lastTagCounts });
+                  if (cacheKeyStr && lastTagCounts) saveCache(cacheKeyStr, { tag_counts: lastTagCounts });
                   return;
                 }
                 buffer += decoder.decode(chunk.value, { stream: true });
@@ -223,25 +320,53 @@
           });
       }
 
+      function getLimit() {
+        var checked = document.querySelector('input[name="limit"]:checked');
+        return checked ? parseInt(checked.value, 10) : 50;
+      }
+
       function getFormValues() {
         return {
           username: document.getElementById('username').value.trim(),
-          limit: parseInt(document.getElementById('limit').value, 10) || 50,
+          limit: getLimit(),
           period: document.getElementById('period').value,
         };
       }
 
       function applyCache() {
+        if (selectedService !== 'lastfm') return;
         var v = getFormValues();
         if (!v.username) { lastFetchedAt = null; updateButton(); return; }
-        var entry = loadCache(v.username, v.limit, v.period);
+        var key = lastfmCacheKey(v.username, v.limit, v.period);
+        var entry = loadCache(key);
         if (entry && entry.artists) {
           renderArtists(entry.artists, v.username, v.period);
           lastFetchedAt = entry.fetchedAt;
           if (entry.tag_counts) {
             renderTagCounts(entry.tag_counts);
           } else {
-            fetchTagCounts(entry.artists.map(function (a) { return a.name; }), v);
+            fetchTagCounts(entry.artists.map(function (a) { return a.name; }), key);
+          }
+        } else {
+          document.getElementById('results-left').innerHTML = '';
+          lastFetchedAt = null;
+        }
+        updateButton();
+      }
+
+      function applySpotifyCache() {
+        if (selectedService !== 'spotify') return;
+        var limit = getLimit();
+        var timeRange = document.getElementById('time_range').value;
+        var key = spotifyCacheKey(limit, timeRange);
+        var entry = loadCache(key);
+        if (entry && entry.artists) {
+          renderSpotifyArtists(entry.artists, entry.display_name, timeRange);
+          lastFetchedAt = entry.fetchedAt;
+          if (entry.tag_counts) {
+            renderTagCounts(entry.tag_counts);
+          } else {
+            fetchTagCounts(entry.artists.map(function (a) { return a.name; }), key);
           }
         } else {
           document.getElementById('results-left').innerHTML = '';
@@ -252,19 +377,25 @@
 
       // Restore cache on page load
       applyCache();
+      applySpotifyCache();
 
       // Refresh button label every 30s so the age stays current
       setInterval(updateButton, 30000);
 
       // Update button when form values change
-      ['username', 'limit', 'period'].forEach(function (id) {
+      ['username', 'period'].forEach(function (id) {
         document.getElementById(id).addEventListener('change', applyCache);
       });
       document.getElementById('username').addEventListener('input', applyCache);
 
-      // Form submit → fetch fresh data from server
-      document.getElementById('fetch-form').addEventListener('submit', function (e) {
-        e.preventDefault();
+      function onSharedFieldChange() {
+        applyCache();
+        applySpotifyCache();
+      }
+      document.getElementById('limit-group').addEventListener('change', onSharedFieldChange);
+      document.getElementById('time_range').addEventListener('change', onSharedFieldChange);
+
+      function fetchLastfmArtists() {
         var v = getFormValues();
         if (!v.username) return;
 
@@ -290,10 +421,11 @@
               return;
             }
             lastFetchedAt = Date.now();
-            saveCache(v.username, v.limit, v.period, { artists: data.artists, tag_counts: null, fetchedAt: lastFetchedAt });
+            var key = lastfmCacheKey(v.username, v.limit, v.period);
+            saveCache(key, { artists: data.artists, tag_counts: null, fetchedAt: lastFetchedAt });
             renderArtists(data.artists, v.username, v.period);
             updateButton();
-            fetchTagCounts(data.artists.map(function (a) { return a.name; }), v);
+            fetchTagCounts(data.artists.map(function (a) { return a.name; }), key);
           })
           .catch(function (err) {
             btn.disabled = false;
@@ -301,6 +433,60 @@
             errEl.style.display = 'block';
             updateButton();
           });
+      }
+
+      function fetchSpotifyArtists() {
+        var limit = getLimit();
+        var timeRange = document.getElementById('time_range').value;
+        var key = spotifyCacheKey(limit, timeRange);
+
+        var btn = document.getElementById('fetch-btn');
+        var errEl = document.getElementById('fetch-error');
+        btn.disabled = true;
+        btn.textContent = 'Fetching…';
+        errEl.style.display = 'none';
+
+        fetch('/fetch-spotify-artists', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit: limit, time_range: timeRange }),
+        })
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            btn.disabled = false;
+            if (data.error) {
+              errEl.textContent = data.error;
+              errEl.style.display = 'block';
+              if (data.needs_auth) {
+                spotifyConnected = false;
+                updateServiceUI();
+              }
+              lastFetchedAt = null;
+              updateButton();
+              return;
+            }
+            lastFetchedAt = Date.now();
+            saveCache(key, { artists: data.artists, display_name: data.display_name, tag_counts: null, fetchedAt: lastFetchedAt });
+            renderSpotifyArtists(data.artists, data.display_name, timeRange);
+            updateButton();
+            fetchTagCounts(data.artists.map(function (a) { return a.name; }), key);
+          })
+          .catch(function (err) {
+            btn.disabled = false;
+            errEl.textContent = 'Error fetching artists: ' + err;
+            errEl.style.display = 'block';
+            updateButton();
+          });
+      }
+
+      // Form submit → fetch fresh data from server
+      document.getElementById('fetch-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        if (selectedService === 'spotify') {
+          fetchSpotifyArtists();
+        } else {
+          fetchLastfmArtists();
+        }
       });
 
       // Gemini fetch

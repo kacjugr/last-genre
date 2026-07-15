@@ -21,6 +21,19 @@ A simple web app to look up a Last.fm user's top artists, see tag frequency acro
 
    `LASTFMRECS_GEMINI_API_KEY` is only required if you want genre recommendations.
 
+   To use the Spotify import instead, also set (register a redirect URI of
+   `http://127.0.0.1:5000/spotify/callback` in your app at
+   https://developer.spotify.com/dashboard):
+
+   ```
+   export SPOTIFY_CLIENT_ID=your_spotify_client_id
+   export SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+   ```
+
+   `SPOTIFY_REDIRECT_URI` and `FLASK_SECRET_KEY` are optional overrides — without
+   them the app derives the redirect URI from the request and generates a random
+   secret key on each restart (which invalidates existing sessions on restart).
+
 ## Usage
 
 ```
