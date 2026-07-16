@@ -43,7 +43,7 @@ def index():
     }
     return render_template(
         "index.html",
-        period_choices=PERIOD_CHOICES,
+        lastfm_period_choices=PERIOD_CHOICES,
         limit_choices=LIMIT_CHOICES,
         form=form,
         spotify_time_range_choices=TIME_RANGE_CHOICES,
@@ -95,10 +95,11 @@ def fetch_tag_counts():
         counts: Counter = Counter()
         for name in artist_names:
             try:
-                counts.update(get_artist_top_tags(name, api_key))
+                tags = get_artist_top_tags(name, api_key)
             except Exception:
-                pass
-            yield f"data: {json.dumps({'artist': name, 'tag_counts': counts.most_common()})}\n\n"
+                tags = []
+            counts.update(tags)
+            yield f"data: {json.dumps({'artist': name, 'tags': tags, 'tag_counts': counts.most_common()})}\n\n"
 
     return Response(
         stream_with_context(generate()),

@@ -67,7 +67,7 @@
           <div>
             <label for="period">Period</label>
             <select id="period" name="period">
-              {% for choice in period_choices %}
+              {% for choice in lastfm_period_choices %}
                 <option value="{{ choice }}" {% if choice == form.period %}selected{% endif %}>{{ choice }}</option>
               {% endfor %}
             </select>
@@ -121,7 +121,10 @@
     </div>
   </div>
 
-  <script>
+  <script type="module">
+    import { cache_check, loadCache, saveCache, load_artist_tags_cache, save_artist_tags_cache } from "{{ url_for('static', filename='js/cache.js') }}";
+    console.log('cache.js module check:', cache_check());
+
     (function () {
       var CACHE_PREFIX = 'lastgenre_v1_';
       var SERVICE_KEY = 'lastgenre_v1_service';
@@ -167,7 +170,7 @@
         if (selectedService === 'spotify') {
           applySpotifyCache();
         } else {
-          applyCache();
+          applyLastFMCache();
         }
       });
 
@@ -179,21 +182,6 @@
 
       function spotifyCacheKey(limit, timeRange) {
         return 'spotify_v1_' + limit + '_' + timeRange.replace('_term', '');
-      }
-
-      function loadCache(key) {
-        try {
-          var raw = localStorage.getItem(key);
-          return raw ? JSON.parse(raw) : null;
-        } catch (e) { return null; }
-      }
-
-      function saveCache(key, update) {
-        try {
-          var existing = loadCache(key) || { fetchedAt: Date.now() };
-          for (var k in update) existing[k] = update[k];
-          localStorage.setItem(key, JSON.stringify(existing));
-        } catch (e) {}
       }
 
       function ageString(fetchedAt) {
@@ -269,16 +257,46 @@
           makeTable(cols, rows) + '</div>';
       }
 
-      function fetchTagCounts(artistNames, cacheKeyStr) {
+      function mergeTagCounts(tagLists) {
+        var counts = {};
+        var order = [];
+        tagLists.forEach(function (tags) {
+          (tags || []).forEach(function (t) {
+            if (!(t in counts)) { counts[t] = 0; order.push(t); }
+            counts[t] += 1;
+          });
+        });
+        return order.map(function (t) { return [t, counts[t]]; })
+          .sort(function (a, b) { return b[1] - a[1]; });
+      }
+
+      function fetchTagCounts(artistNames) {
         var statusEl = document.getElementById('tag-counts-status');
+        var runningTagLists = [];
+        var uncachedNames = [];
+
+        artistNames.forEach(function (name) {
+          var entry = load_artist_tags_cache(name);
+          if (entry && entry.tags) {
+            runningTagLists.push(entry.tags);
+          } else {
+            uncachedNames.push(name);
+          }
+        });
+        renderTagCounts(mergeTagCounts(runningTagLists));
+
+        if (!uncachedNames.length) {
+          statusEl.style.display = 'none';
+          return;
+        }
+
         statusEl.textContent = 'Fetching tags…';
         statusEl.style.display = 'block';
-        var lastTagCounts = null;
 
         fetch('/fetch-tag-counts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ artist_names: artistNames }),
+          body: JSON.stringify({ artist_names: uncachedNames }),
         })
           .then(function (res) {
             if (!res.ok) {
@@ -295,7 +313,6 @@
               reader.read().then(function (chunk) {
                 if (chunk.done) {
                   statusEl.style.display = 'none';
-                  if (cacheKeyStr && lastTagCounts) saveCache(cacheKeyStr, { tag_counts: lastTagCounts });
                   return;
                 }
                 buffer += decoder.decode(chunk.value, { stream: true });
@@ -306,8 +323,9 @@
                   try {
                     var ev = JSON.parse(line.slice(6));
                     statusEl.textContent = 'Fetching tags for ' + ev.artist + '…';
-                    lastTagCounts = ev.tag_counts;
-                    renderTagCounts(ev.tag_counts);
+                    save_artist_tags_cache(ev.artist, ev.tags);
+                    runningTagLists.push(ev.tags);
+                    renderTagCounts(mergeTagCounts(runningTagLists));
                   } catch (e) {}
                 });
                 read();
@@ -333,7 +351,7 @@
         };
       }
 
-      function applyCache() {
+      function applyLastFMCache() {
         if (selectedService !== 'lastfm') return;
         var v = getFormValues();
         if (!v.username) { lastFetchedAt = null; updateButton(); return; }
@@ -342,11 +360,7 @@
         if (entry && entry.artists) {
           renderArtists(entry.artists, v.username, v.period);
           lastFetchedAt = entry.fetchedAt;
-          if (entry.tag_counts) {
-            renderTagCounts(entry.tag_counts);
-          } else {
-            fetchTagCounts(entry.artists.map(function (a) { return a.name; }), key);
-          }
+          fetchTagCounts(entry.artists.map(function (a) { return a.name; }));
         } else {
           document.getElementById('results-left').innerHTML = '';
           lastFetchedAt = null;
@@ -363,11 +377,7 @@
         if (entry && entry.artists) {
           renderSpotifyArtists(entry.artists, entry.display_name, timeRange);
           lastFetchedAt = entry.fetchedAt;
-          if (entry.tag_counts) {
-            renderTagCounts(entry.tag_counts);
-          } else {
-            fetchTagCounts(entry.artists.map(function (a) { return a.name; }), key);
-          }
+          fetchTagCounts(entry.artists.map(function (a) { return a.name; }));
         } else {
           document.getElementById('results-left').innerHTML = '';
           lastFetchedAt = null;
@@ -376,7 +386,7 @@
       }
 
       // Restore cache on page load
-      applyCache();
+      applyLastFMCache();
       applySpotifyCache();
 
       // Refresh button label every 30s so the age stays current
@@ -384,12 +394,12 @@
 
       // Update button when form values change
       ['username', 'period'].forEach(function (id) {
-        document.getElementById(id).addEventListener('change', applyCache);
+        document.getElementById(id).addEventListener('change', applyLastFMCache);
       });
-      document.getElementById('username').addEventListener('input', applyCache);
+      document.getElementById('username').addEventListener('input', applyLastFMCache);
 
       function onSharedFieldChange() {
-        applyCache();
+        applyLastFMCache();
         applySpotifyCache();
       }
       document.getElementById('limit-group').addEventListener('change', onSharedFieldChange);
@@ -422,10 +432,10 @@
             }
             lastFetchedAt = Date.now();
             var key = lastfmCacheKey(v.username, v.limit, v.period);
-            saveCache(key, { artists: data.artists, tag_counts: null, fetchedAt: lastFetchedAt });
+            saveCache(key, { artists: data.artists, fetchedAt: lastFetchedAt });
             renderArtists(data.artists, v.username, v.period);
             updateButton();
-            fetchTagCounts(data.artists.map(function (a) { return a.name; }), key);
+            fetchTagCounts(data.artists.map(function (a) { return a.name; }));
           })
           .catch(function (err) {
             btn.disabled = false;
@@ -466,10 +476,10 @@
               return;
             }
             lastFetchedAt = Date.now();
-            saveCache(key, { artists: data.artists, display_name: data.display_name, tag_counts: null, fetchedAt: lastFetchedAt });
+            saveCache(key, { artists: data.artists, display_name: data.display_name, fetchedAt: lastFetchedAt });
             renderSpotifyArtists(data.artists, data.display_name, timeRange);
             updateButton();
-            fetchTagCounts(data.artists.map(function (a) { return a.name; }), key);
+            fetchTagCounts(data.artists.map(function (a) { return a.name; }));
           })
           .catch(function (err) {
             btn.disabled = false;
