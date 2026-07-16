@@ -4,10 +4,10 @@
 import json
 import os
 import secrets
-import time
 from collections import Counter
 
 import requests
+import spotipy
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, stream_with_context, url_for
 
@@ -15,11 +15,12 @@ from gemini import ask_gemini_with_retry_streaming, build_gemini_prompt
 from lastfm import PERIOD_CHOICES, get_artist_top_tags, get_chart_top_tags, get_user_top_artists
 from spotify import (
     TIME_RANGE_CHOICES,
-    build_authorize_url,
-    exchange_code_for_token,
+    TOKEN_SESSION_KEY,
+    get_client as get_spotify_client,
     get_current_user as get_spotify_current_user,
     get_user_top_artists as get_spotify_top_artists,
-    refresh_access_token,
+    is_connected as spotify_is_connected,
+    make_oauth as make_spotify_oauth,
 )
 
 load_dotenv()
@@ -34,6 +35,14 @@ def _spotify_redirect_uri() -> str:
     return os.environ.get("SPOTIFY_REDIRECT_URI", request.url_root.rstrip("/") + "/spotify/callback")
 
 
+def _spotify_oauth():
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID")
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return None
+    return make_spotify_oauth(session, client_id, client_secret, _spotify_redirect_uri())
+
+
 @app.route("/", methods=["GET"])
 def index():
     form = {
@@ -41,13 +50,14 @@ def index():
         "limit": 50,
         "period": "overall",
     }
+    oauth = _spotify_oauth()
     return render_template(
         "index.html",
         lastfm_period_choices=PERIOD_CHOICES,
         limit_choices=LIMIT_CHOICES,
         form=form,
         spotify_time_range_choices=TIME_RANGE_CHOICES,
-        spotify_connected=bool(session.get("spotify_access_token")),
+        spotify_connected=bool(oauth and spotify_is_connected(oauth)),
         spotify_error=request.args.get("spotify_error"),
     )
 
@@ -153,20 +163,18 @@ def gemini():
 
 @app.route("/spotify/login", methods=["GET"])
 def spotify_login():
-    client_id = os.environ.get("SPOTIFY_CLIENT_ID")
-    if not client_id:
-        return jsonify({"error": "Server is missing the SPOTIFY_CLIENT_ID environment variable."}), 500
+    oauth = _spotify_oauth()
+    if not oauth:
+        return jsonify({"error": "Server is missing Spotify API credentials."}), 500
 
     state = secrets.token_urlsafe(16)
     session["spotify_state"] = state
-    return redirect(build_authorize_url(client_id, _spotify_redirect_uri(), state))
+    return redirect(oauth.get_authorize_url(state=state))
 
 
 @app.route("/spotify/logout", methods=["GET"])
 def spotify_logout():
-    session.pop("spotify_access_token", None)
-    session.pop("spotify_refresh_token", None)
-    session.pop("spotify_expires_at", None)
+    session.pop(TOKEN_SESSION_KEY, None)
     session.pop("spotify_display_name", None)
     return redirect(url_for("index"))
 
@@ -181,9 +189,8 @@ def spotify_callback():
     if not state or state != session.pop("spotify_state", None):
         return redirect(url_for("index", spotify_error="Spotify login state mismatch. Please try again."))
 
-    client_id = os.environ.get("SPOTIFY_CLIENT_ID")
-    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
-    if not client_id or not client_secret:
+    oauth = _spotify_oauth()
+    if not oauth:
         return redirect(url_for("index", spotify_error="Server is missing Spotify API credentials."))
 
     code = request.args.get("code")
@@ -191,19 +198,14 @@ def spotify_callback():
         return redirect(url_for("index", spotify_error="Spotify did not return an authorization code."))
 
     try:
-        token_data = exchange_code_for_token(code, _spotify_redirect_uri(), client_id, client_secret)
-    except requests.RequestException as e:
+        oauth.get_access_token(code, as_dict=False, check_cache=False)
+    except (spotipy.SpotifyOauthError, requests.RequestException) as e:
         return redirect(url_for("index", spotify_error=f"Could not connect to Spotify: {e}"))
 
-    access_token = token_data["access_token"]
-    session["spotify_access_token"] = access_token
-    session["spotify_refresh_token"] = token_data.get("refresh_token")
-    session["spotify_expires_at"] = time.time() + token_data["expires_in"]
-
     try:
-        user = get_spotify_current_user(access_token)
+        user = get_spotify_current_user(get_spotify_client(oauth))
         session["spotify_display_name"] = user.get("display_name") or user.get("id")
-    except (requests.RequestException, RuntimeError):
+    except (spotipy.SpotifyException, requests.RequestException):
         session["spotify_display_name"] = None
 
     return redirect(url_for("index"))
@@ -221,30 +223,14 @@ def fetch_spotify_artists():
     if time_range not in TIME_RANGE_CHOICES:
         return jsonify({"error": "Invalid time range selected."}), 400
 
-    access_token = session.get("spotify_access_token")
-    if not access_token:
+    oauth = _spotify_oauth()
+    if not oauth or not spotify_is_connected(oauth):
         return jsonify({"error": "Not connected to Spotify.", "needs_auth": True}), 401
 
-    if session.get("spotify_expires_at", 0) <= time.time():
-        refresh_token = session.get("spotify_refresh_token")
-        client_id = os.environ.get("SPOTIFY_CLIENT_ID")
-        client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
-        if not refresh_token or not client_id or not client_secret:
-            session.pop("spotify_access_token", None)
-            return jsonify({"error": "Spotify session expired. Please reconnect.", "needs_auth": True}), 401
-        try:
-            token_data = refresh_access_token(refresh_token, client_id, client_secret)
-        except requests.RequestException as e:
-            return jsonify({"error": f"Could not refresh Spotify token: {e}"}), 500
-        access_token = token_data["access_token"]
-        session["spotify_access_token"] = access_token
-        session["spotify_expires_at"] = time.time() + token_data["expires_in"]
-        if token_data.get("refresh_token"):
-            session["spotify_refresh_token"] = token_data["refresh_token"]
-
+    sp = get_spotify_client(oauth)
     try:
-        artists = get_spotify_top_artists(access_token, limit, time_range)
-    except (requests.RequestException, RuntimeError) as e:
+        artists = get_spotify_top_artists(sp, limit, time_range)
+    except (spotipy.SpotifyException, requests.RequestException) as e:
         return jsonify({"error": f"Could not fetch top artists: {e}"}), 500
 
     if not artists:
