@@ -38,6 +38,36 @@
       .results-grid { grid-template-columns: 1fr; }
       .recs-panel { border-left: none; padding-left: 0; border-top: 1px solid #ddd; padding-top: 1.5rem; }
     }
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
+      display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem;
+    }
+    .modal-box {
+      position: relative; background: #fff; width: min(560px, 100%); min-height: 320px;
+      max-height: 80vh; box-sizing: border-box; padding: 2.5rem 3.5rem;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+      clip-path: polygon(18px 0, calc(100% - 18px) 0, 100% 18px, 100% calc(100% - 18px),
+        calc(100% - 18px) 100%, 18px 100%, 0 calc(100% - 18px), 0 18px);
+      display: flex; flex-direction: column;
+    }
+    .modal-close {
+      position: absolute; top: 0.5rem; right: 0.75rem; background: none; border: none;
+      font-size: 1.4rem; line-height: 1; color: #888; cursor: pointer; padding: 0.25rem;
+      z-index: 1;
+    }
+    .modal-close:hover { color: #222; }
+    .modal-arrow {
+      position: absolute; top: 0; bottom: 0; width: 3rem; border: none; background: none;
+      font-size: 1.8rem; font-weight: bold; color: #999; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .modal-arrow:hover:not(:disabled) { color: #222; }
+    .modal-arrow:disabled { opacity: 0.2; cursor: default; }
+    .modal-arrow-left { left: 0; }
+    .modal-arrow-right { right: 0; }
+    .modal-content { flex: 1; overflow-y: auto; }
+    .modal-content pre { white-space: pre-wrap; word-break: break-word; }
+    .modal-page-indicator { text-align: center; font-size: 0.75rem; color: #888; margin-top: 1rem; }
   </style>
 </head>
 <body>
@@ -118,6 +148,17 @@
       </div>
       <p id="gemini-status" style="display:none;"></p>
       <pre id="gemini-reply" style="display:none;"></pre>
+      <button id="gemini-view-btn" type="button" style="display:none; margin-top: 0.75rem;">View Recommendations</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="gemini-modal-overlay" style="display:none;">
+    <div class="modal-box">
+      <button type="button" class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+      <button type="button" class="modal-arrow modal-arrow-left" id="modal-prev" aria-label="Previous">&lt;</button>
+      <div class="modal-content" id="modal-content"></div>
+      <button type="button" class="modal-arrow modal-arrow-right" id="modal-next" aria-label="Next">&gt;</button>
+      <p class="modal-page-indicator" id="modal-page-indicator"></p>
     </div>
   </div>
 
@@ -129,7 +170,10 @@
       var CACHE_PREFIX = 'lastgenre_v1_';
       var SERVICE_KEY = 'lastgenre_v1_service';
       var currentArtists = [];
-      var lastFetchedAt = null;
+      // Full (up to max-limit) artist list + its identifying params for the service currently on screen.
+      // Changing the limit radio just re-slices this instead of re-fetching.
+      var currentFullArtists = null;
+      var currentMeta = null;
       var serviceToggle = document.getElementById('service-toggle');
       var spotifyConnected = serviceToggle.dataset.spotifyConnected === 'true';
       var selectedService = (localStorage.getItem(SERVICE_KEY) === 'spotify') ? 'spotify' : 'lastfm';
@@ -149,6 +193,7 @@
         document.getElementById('fetch-form').style.display = needsConnect ? 'none' : '';
 
         document.getElementById('fetch-error').style.display = 'none';
+        updateFetchButton();
       }
 
       document.getElementById('spotify-disconnect-btn').addEventListener('click', function () {
@@ -176,12 +221,33 @@
 
       updateServiceUI();
 
-      function lastfmCacheKey(username, limit, period) {
-        return CACHE_PREFIX + username + '_' + limit + '_' + period;
+      // Cache is keyed by username/period (or time_range) only — a max-limit list covers every
+      // shorter limit, so there's no need for a separate cache entry per limit selection.
+      function lastfmCacheKey(username, period) {
+        return CACHE_PREFIX + username + '_' + period;
       }
 
-      function spotifyCacheKey(limit, timeRange) {
-        return 'spotify_v1_' + limit + '_' + timeRange.replace('_term', '');
+      function spotifyCacheKey(timeRange) {
+        return 'spotify_v1_' + timeRange.replace('_term', '');
+      }
+
+      function getMaxLimit() {
+        var vals = Array.prototype.map.call(document.querySelectorAll('input[name="limit"]'), function (el) {
+          return parseInt(el.value, 10);
+        });
+        return vals.length ? Math.max.apply(null, vals) : 500;
+      }
+
+      // The cache key for whatever username/period (or time_range) is currently selected in the
+      // form — each such key carries its own fetchedAt, since different periods are fetched
+      // independently and can go stale at different times.
+      function getCurrentCacheKey() {
+        if (selectedService === 'spotify') {
+          return spotifyCacheKey(document.getElementById('time_range').value);
+        }
+        var username = document.getElementById('username').value.trim();
+        if (!username) return null;
+        return lastfmCacheKey(username, document.getElementById('period').value);
       }
 
       function ageString(fetchedAt) {
@@ -194,10 +260,14 @@
         return Math.floor(hrs / 24) + 'd ago';
       }
 
-      function updateButton() {
+      // Button reflects the fetchedAt of the cache entry for the currently selected
+      // username/period (or time_range), not a single timestamp for the whole service.
+      function updateFetchButton() {
         var btn = document.getElementById('fetch-btn');
-        if (lastFetchedAt) {
-          btn.textContent = 'Refresh (' + ageString(lastFetchedAt) + ')';
+        var key = getCurrentCacheKey();
+        var entry = key ? loadCache(key) : null;
+        if (entry && entry.fetchedAt) {
+          btn.textContent = 'Refresh (' + ageString(entry.fetchedAt) + ')';
         } else {
           btn.textContent = 'Fetch';
         }
@@ -223,7 +293,8 @@
         return '<div class="scroll-box"><table><thead><tr>' + ths + '</tr></thead><tbody>' + trs + '</tbody></table></div>';
       }
 
-      function renderArtists(artists, username, period) {
+      function renderArtists(allArtists, limit, username, period) {
+        var artists = allArtists.slice(0, limit);
         currentArtists = artists.map(function (a) { return a.name; });
         var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}, {label: 'Plays', cls: 'col-r'}];
         var rows = artists.map(function (a, i) { return [i + 1, esc(a.name), a.playcount]; });
@@ -233,9 +304,12 @@
         document.getElementById('gemini-status').style.display = 'none';
         document.getElementById('gemini-reply').style.display = 'none';
         document.getElementById('gemini-reply').textContent = '';
+        document.getElementById('gemini-view-btn').style.display = 'none';
+        fetchTagCounts(currentArtists);
       }
 
-      function renderSpotifyArtists(artists, displayName, timeRange) {
+      function renderSpotifyArtists(allArtists, limit, displayName, timeRange) {
+        var artists = allArtists.slice(0, limit);
         currentArtists = artists.map(function (a) { return a.name; });
         var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}];
         var rows = artists.map(function (a, i) { return [i + 1, esc(a.name)]; });
@@ -245,6 +319,20 @@
         document.getElementById('gemini-status').style.display = 'none';
         document.getElementById('gemini-reply').style.display = 'none';
         document.getElementById('gemini-reply').textContent = '';
+        document.getElementById('gemini-view-btn').style.display = 'none';
+        fetchTagCounts(currentArtists);
+      }
+
+      // Re-renders from the already-loaded full artist list at the currently selected limit —
+      // used when only the limit radio changes, so no network round-trip is needed.
+      function renderFromCache() {
+        if (!currentFullArtists || !currentMeta) return;
+        var limit = getLimit();
+        if (selectedService === 'spotify') {
+          renderSpotifyArtists(currentFullArtists, limit, currentMeta.displayName, currentMeta.timeRange);
+        } else {
+          renderArtists(currentFullArtists, limit, currentMeta.username, currentMeta.period);
+        }
       }
 
       function renderTagCounts(tag_counts) {
@@ -346,7 +434,6 @@
       function getFormValues() {
         return {
           username: document.getElementById('username').value.trim(),
-          limit: getLimit(),
           period: document.getElementById('period').value,
         };
       }
@@ -354,35 +441,42 @@
       function applyLastFMCache() {
         if (selectedService !== 'lastfm') return;
         var v = getFormValues();
-        if (!v.username) { lastFetchedAt = null; updateButton(); return; }
-        var key = lastfmCacheKey(v.username, v.limit, v.period);
+        if (!v.username) {
+          currentFullArtists = null;
+          currentMeta = null;
+          document.getElementById('results-left').innerHTML = '';
+          updateFetchButton();
+          return;
+        }
+        var key = lastfmCacheKey(v.username, v.period);
         var entry = loadCache(key);
         if (entry && entry.artists) {
-          renderArtists(entry.artists, v.username, v.period);
-          lastFetchedAt = entry.fetchedAt;
-          fetchTagCounts(entry.artists.map(function (a) { return a.name; }));
+          currentFullArtists = entry.artists;
+          currentMeta = { username: v.username, period: v.period };
+          renderFromCache();
         } else {
+          currentFullArtists = null;
+          currentMeta = null;
           document.getElementById('results-left').innerHTML = '';
-          lastFetchedAt = null;
         }
-        updateButton();
+        updateFetchButton();
       }
 
       function applySpotifyCache() {
         if (selectedService !== 'spotify') return;
-        var limit = getLimit();
         var timeRange = document.getElementById('time_range').value;
-        var key = spotifyCacheKey(limit, timeRange);
+        var key = spotifyCacheKey(timeRange);
         var entry = loadCache(key);
         if (entry && entry.artists) {
-          renderSpotifyArtists(entry.artists, entry.display_name, timeRange);
-          lastFetchedAt = entry.fetchedAt;
-          fetchTagCounts(entry.artists.map(function (a) { return a.name; }));
+          currentFullArtists = entry.artists;
+          currentMeta = { displayName: entry.display_name, timeRange: timeRange };
+          renderFromCache();
         } else {
+          currentFullArtists = null;
+          currentMeta = null;
           document.getElementById('results-left').innerHTML = '';
-          lastFetchedAt = null;
         }
-        updateButton();
+        updateFetchButton();
       }
 
       // Restore cache on page load
@@ -390,7 +484,7 @@
       applySpotifyCache();
 
       // Refresh button label every 30s so the age stays current
-      setInterval(updateButton, 30000);
+      setInterval(updateFetchButton, 30000);
 
       // Update button when form values change
       ['username', 'period'].forEach(function (id) {
@@ -398,12 +492,10 @@
       });
       document.getElementById('username').addEventListener('input', applyLastFMCache);
 
-      function onSharedFieldChange() {
-        applyLastFMCache();
-        applySpotifyCache();
-      }
-      document.getElementById('limit-group').addEventListener('change', onSharedFieldChange);
-      document.getElementById('time_range').addEventListener('change', onSharedFieldChange);
+      // Limit only changes what's displayed, not what's fetched — re-slice the cached full list.
+      document.getElementById('limit-group').addEventListener('change', renderFromCache);
+      // Time range is a real dimension of the data, so it needs its own cache lookup.
+      document.getElementById('time_range').addEventListener('change', applySpotifyCache);
 
       function fetchLastfmArtists() {
         var v = getFormValues();
@@ -418,7 +510,7 @@
         fetch('/fetch-artists', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(v),
+          body: JSON.stringify({ username: v.username, period: v.period, limit: getMaxLimit() }),
         })
           .then(function (res) { return res.json(); })
           .then(function (data) {
@@ -426,29 +518,28 @@
             if (data.error) {
               errEl.textContent = data.error;
               errEl.style.display = 'block';
-              lastFetchedAt = null;
-              updateButton();
+              updateFetchButton();
               return;
             }
-            lastFetchedAt = Date.now();
-            var key = lastfmCacheKey(v.username, v.limit, v.period);
-            saveCache(key, { artists: data.artists, fetchedAt: lastFetchedAt });
-            renderArtists(data.artists, v.username, v.period);
-            updateButton();
-            fetchTagCounts(data.artists.map(function (a) { return a.name; }));
+            var now = Date.now();
+            var key = lastfmCacheKey(v.username, v.period);
+            saveCache(key, { artists: data.artists, fetchedAt: now });
+            currentFullArtists = data.artists;
+            currentMeta = { username: v.username, period: v.period };
+            renderFromCache();
+            updateFetchButton();
           })
           .catch(function (err) {
             btn.disabled = false;
             errEl.textContent = 'Error fetching artists: ' + err;
             errEl.style.display = 'block';
-            updateButton();
+            updateFetchButton();
           });
       }
 
       function fetchSpotifyArtists() {
-        var limit = getLimit();
         var timeRange = document.getElementById('time_range').value;
-        var key = spotifyCacheKey(limit, timeRange);
+        var key = spotifyCacheKey(timeRange);
 
         var btn = document.getElementById('fetch-btn');
         var errEl = document.getElementById('fetch-error');
@@ -459,7 +550,7 @@
         fetch('/fetch-spotify-artists', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ limit: limit, time_range: timeRange }),
+          body: JSON.stringify({ limit: getMaxLimit(), time_range: timeRange }),
         })
           .then(function (res) { return res.json(); })
           .then(function (data) {
@@ -471,21 +562,21 @@
                 spotifyConnected = false;
                 updateServiceUI();
               }
-              lastFetchedAt = null;
-              updateButton();
+              updateFetchButton();
               return;
             }
-            lastFetchedAt = Date.now();
-            saveCache(key, { artists: data.artists, display_name: data.display_name, fetchedAt: lastFetchedAt });
-            renderSpotifyArtists(data.artists, data.display_name, timeRange);
-            updateButton();
-            fetchTagCounts(data.artists.map(function (a) { return a.name; }));
+            var now = Date.now();
+            saveCache(key, { artists: data.artists, display_name: data.display_name, fetchedAt: now });
+            currentFullArtists = data.artists;
+            currentMeta = { displayName: data.display_name, timeRange: timeRange };
+            renderFromCache();
+            updateFetchButton();
           })
           .catch(function (err) {
             btn.disabled = false;
             errEl.textContent = 'Error fetching artists: ' + err;
             errEl.style.display = 'block';
-            updateButton();
+            updateFetchButton();
           });
       }
 
@@ -504,6 +595,76 @@
       var geminiBtn = document.getElementById('gemini-btn');
       var statusEl = document.getElementById('gemini-status');
       var replyEl = document.getElementById('gemini-reply');
+      var currentGeminiRecommendations = null; // parsed JSON portion of the last Gemini reply, for later use
+      var currentGeminiText = null; // plain-text portion of the last Gemini reply, for later use
+
+      // Gemini replies end with a fenced ```json ... ``` block; split it from the prose above it.
+      function splitGeminiReply(text) {
+        var match = text.match(/```json\n([\s\S]*?)\n```\s*$/);
+        if (!match) return { text: text.trim(), json: null };
+        var plainText = text.slice(0, match.index).trim();
+        var json = null;
+        try { json = JSON.parse(match[1]); } catch (e) {}
+        return { text: plainText, json: json };
+      }
+
+      // Recommendations modal — page 0 is the prose intro, pages 1..n are artist entries
+      var modalOverlay = document.getElementById('gemini-modal-overlay');
+      var modalContent = document.getElementById('modal-content');
+      var modalPrev = document.getElementById('modal-prev');
+      var modalNext = document.getElementById('modal-next');
+      var modalPageIndicator = document.getElementById('modal-page-indicator');
+      var modalClose = document.getElementById('modal-close');
+      var geminiViewBtn = document.getElementById('gemini-view-btn');
+      var modalPage = 0;
+
+      function renderModalPage() {
+        var artists = (currentGeminiRecommendations && Array.isArray(currentGeminiRecommendations)) ? currentGeminiRecommendations : [];
+        var pageCount = 1 + artists.length;
+
+        if (modalPage === 0) {
+          modalContent.innerHTML = '<p>' + esc(currentGeminiText || '').replace(/\n+/g, '</p><p>') + '</p>';
+        } else {
+          var artist = artists[modalPage - 1];
+          var pre = document.createElement('pre');
+          pre.textContent = JSON.stringify(artist, null, 2);
+          modalContent.innerHTML = '';
+          modalContent.appendChild(pre);
+        }
+
+        modalPrev.disabled = modalPage === 0;
+        modalNext.disabled = modalPage === pageCount - 1;
+        modalPageIndicator.textContent = (modalPage + 1) + ' / ' + pageCount;
+      }
+
+      function openGeminiModal() {
+        modalPage = 0;
+        renderModalPage();
+        modalOverlay.style.display = 'flex';
+      }
+
+      function closeGeminiModal() {
+        modalOverlay.style.display = 'none';
+      }
+
+      modalPrev.addEventListener('click', function () {
+        if (modalPage > 0) { modalPage -= 1; renderModalPage(); }
+      });
+      modalNext.addEventListener('click', function () {
+        var artists = (currentGeminiRecommendations && Array.isArray(currentGeminiRecommendations)) ? currentGeminiRecommendations : [];
+        if (modalPage < artists.length) { modalPage += 1; renderModalPage(); }
+      });
+      modalClose.addEventListener('click', closeGeminiModal);
+      modalOverlay.addEventListener('click', function (e) {
+        if (e.target === modalOverlay) closeGeminiModal();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (modalOverlay.style.display === 'none') return;
+        if (e.key === 'Escape') closeGeminiModal();
+        if (e.key === 'ArrowLeft') modalPrev.click();
+        if (e.key === 'ArrowRight') modalNext.click();
+      });
+      geminiViewBtn.addEventListener('click', openGeminiModal);
 
       // Global chart top tags — loaded automatically on page load
       var CHART_TAGS_KEY = 'lastgenre_v1_chart_tags';
@@ -574,6 +735,7 @@
         statusEl.style.display = 'block';
         replyEl.style.display = 'none';
         replyEl.textContent = '';
+        geminiViewBtn.style.display = 'none';
 
         fetch('/gemini', {
           method: 'POST',
@@ -610,8 +772,14 @@
                   } else {
                     statusEl.style.display = 'none';
                   }
-                  replyEl.textContent = ev.reply;
+                  var parts = splitGeminiReply(ev.reply);
+                  currentGeminiRecommendations = parts.json;
+                  currentGeminiText = parts.text;
+                  console.log('Gemini JSON portion:', currentGeminiRecommendations);
+                  replyEl.textContent = parts.text;
                   replyEl.style.display = 'block';
+                  geminiViewBtn.style.display =
+                    (Array.isArray(currentGeminiRecommendations) && currentGeminiRecommendations.length) ? 'inline-block' : 'none';
                   break;
                 case 'busy':
                   geminiBtn.disabled = false;
