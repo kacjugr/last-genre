@@ -163,11 +163,17 @@
   </div>
 
   <script type="module">
-    import { cache_check, loadCache, saveCache, load_artist_tags_cache, save_artist_tags_cache } from "{{ url_for('static', filename='js/cache.js') }}";
-    import { lastfmCacheKey, fetchLastfmTopArtists } from "{{ url_for('static', filename='js/lastfm.js') }}";
-    import { spotifyCacheKey, fetchSpotifyTopArtists } from "{{ url_for('static', filename='js/spotify.js') }}";
+    import { loadCache, saveCache, load_artist_tags_cache, save_artist_tags_cache } from "{{ url_for('static', filename='js/cache.js') }}";
     import { splitGeminiReply } from "{{ url_for('static', filename='js/gemini.js') }}";
-    console.log('cache.js module check:', cache_check());
+
+    // lastfm.js and spotify.js are self-registering plugin modules: importing
+    // them for their side effects (no named bindings needed) is what wires
+    // their form-value/fetch/cache-key functions into the shared registries
+    // below. See static/js/registries.js for the full registration contract
+    // and how to add another service without touching this file.
+    import "{{ url_for('static', filename='js/lastfm.js') }}";
+    import "{{ url_for('static', filename='js/spotify.js') }}";
+    import { formValueGetters, fetchTopArtistsFns, cacheKeyBuilders } from "{{ url_for('static', filename='js/registries.js') }}";
 
     (function () {
       var SERVICE_KEY = 'lastgenre_v1_service';
@@ -233,14 +239,12 @@
 
       // The cache key for whatever username/period (or time_range) is currently selected in the
       // form — each such key carries its own fetchedAt, since different periods are fetched
-      // independently and can go stale at different times.
+      // independently and can go stale at different times. cacheKeyBuilders comes from
+      // registries.js, populated by lastfm.js/spotify.js self-registering.
       function getCurrentCacheKey() {
-        if (selectedService === 'spotify') {
-          return spotifyCacheKey(document.getElementById('time_range').value);
-        }
-        var username = document.getElementById('username').value.trim();
-        if (!username) return null;
-        return lastfmCacheKey(username, document.getElementById('period').value);
+        var v = getFetchFormValues();
+        if (selectedService === 'lastfm' && !v.username) return null;
+        return cacheKeyBuilders[selectedService](v);
       }
 
       function ageString(fetchedAt) {
@@ -315,37 +319,6 @@
         document.getElementById('gemini-view-btn').style.display = 'none';
         fetchTagCounts(currentArtists);
       }
-
-
-      // function renderLastfmArtists(allArtists, limit, username, period) {
-      //   var artists = allArtists.slice(0, limit);
-      //   currentArtists = artists.map(function (a) { return a.name; });
-      //   var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}, {label: 'Plays', cls: 'col-r'}];
-      //   var rows = artists.map(function (a, i) { return [i + 1, esc(a.name), a.playcount]; });
-      //   document.getElementById('results-left').innerHTML =
-      //     '<div class="section"><h2>Top ' + artists.length + ' artists for ' +
-      //     esc(username) + ' (' + esc(period) + ')</h2>' + makeTable(cols, rows) + '</div>';
-      //   document.getElementById('gemini-status').style.display = 'none';
-      //   document.getElementById('gemini-reply').style.display = 'none';
-      //   document.getElementById('gemini-reply').textContent = '';
-      //   document.getElementById('gemini-view-btn').style.display = 'none';
-      //   fetchTagCounts(currentArtists);
-      // }
-
-      // function renderSpotifyArtists(allArtists, limit, displayName, timeRange) {
-      //   var artists = allArtists.slice(0, limit);
-      //   currentArtists = artists.map(function (a) { return a.name; });
-      //   var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}];
-      //   var rows = artists.map(function (a, i) { return [i + 1, esc(a.name)]; });
-      //   document.getElementById('results-left').innerHTML =
-      //     '<div class="section"><h2>Top ' + artists.length + ' artists for ' +
-      //     esc(displayName) + ' (' + esc(timeRange) + ')</h2>' + makeTable(cols, rows) + '</div>';
-      //   document.getElementById('gemini-status').style.display = 'none';
-      //   document.getElementById('gemini-reply').style.display = 'none';
-      //   document.getElementById('gemini-reply').textContent = '';
-      //   document.getElementById('gemini-view-btn').style.display = 'none';
-      //   fetchTagCounts(currentArtists);
-      // }
 
       // Re-renders from the already-loaded full artist list at the currently selected limit —
       // used when only the limit radio changes, so no network round-trip is needed.
@@ -453,7 +426,7 @@
 
       function applyLastFMCache() {
         if (selectedService !== 'lastfm') return;
-        var v = getLastfmFormValues();
+        var v = formValueGetters.lastfm();
         if (!v.username) {
           currentFullArtists = null;
           currentMeta = null;
@@ -461,7 +434,7 @@
           updateFetchButton();
           return;
         }
-        var key = lastfmCacheKey(v.username, v.period);
+        var key = cacheKeyBuilders.lastfm(v);
         var entry = loadCache(key);
         if (entry && entry.artists) {
           currentFullArtists = entry.artists;
@@ -477,12 +450,12 @@
 
       function applySpotifyCache() {
         if (selectedService !== 'spotify') return;
-        var timeRange = document.getElementById('time_range').value;
-        var key = spotifyCacheKey(timeRange);
+        var v = formValueGetters.spotify();
+        var key = cacheKeyBuilders.spotify(v);
         var entry = loadCache(key);
         if (entry && entry.artists) {
           currentFullArtists = entry.artists;
-          currentMeta = { username: entry.display_name, period: timeRange };
+          currentMeta = { username: entry.display_name, period: v.timeRange };
           renderFromCache();
         } else {
           currentFullArtists = null;
@@ -534,34 +507,12 @@
         updateFetchButton();
       }
 
-      function getLastfmFormValues() {
-        return {
-          username: document.getElementById('username').value.trim(),
-          period: document.getElementById('period').value,
-        };
-      }
-
-      function getSpotifyFormValues() {
-        return {
-          timeRange: document.getElementById('time_range').value,
-        };
-      }
-
-      // Per-service strategy maps — getFetchFormValues/fetchArtists dispatch through these
-      // instead of branching on selectedService, so adding a service is one map entry each.
-      var formValueGetters = {
-        lastfm: getLastfmFormValues,
-        spotify: getSpotifyFormValues,
-      };
-
+      // formValueGetters/fetchTopArtistsFns come from registries.js, populated by
+      // lastfm.js/spotify.js self-registering — adding a service means writing a new
+      // module like those, not touching this dispatch logic.
       function getFetchFormValues() {
         return formValueGetters[selectedService]();
       }
-
-      var fetchTopArtistsFns = {
-        lastfm: fetchLastfmTopArtists,
-        spotify: fetchSpotifyTopArtists,
-      };
 
       function fetchArtists() {
         startFetch();
@@ -579,12 +530,12 @@
             }
             var now = Date.now();
             if (selectedService === 'spotify') {
-              var key = spotifyCacheKey(v.timeRange);
+              var key = cacheKeyBuilders.spotify(v);
               saveCache(key, { artists: data.artists, display_name: data.display_name, fetchedAt: now });
               currentFullArtists = data.artists;
               currentMeta = { username: data.display_name, period: v.timeRange };
             } else {
-              var key = lastfmCacheKey(v.username, v.period);
+              var key = cacheKeyBuilders.lastfm(v);
               saveCache(key, { artists: data.artists, fetchedAt: now });
               currentFullArtists = data.artists;
               currentMeta = { username: v.username, period: v.period };
@@ -670,7 +621,7 @@
       geminiViewBtn.addEventListener('click', openGeminiModal);
 
       // Global chart top tags — loaded automatically on page load
-      var CHART_TAGS_KEY = 'lastgenre_v1_chart_tags';
+      var CHART_TAGS_KEY = 'lastfm_v1_chart_tags';
       var CHART_TAGS_TTL = 60 * 1000;
       var chartTagsStatus = document.getElementById('chart-tags-status');
       var chartTagsList = document.getElementById('chart-tags-list');

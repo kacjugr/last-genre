@@ -1,7 +1,3 @@
-export function cache_check() {
-  return { name: 'hello world' };
-}
-
 export function saveCache(key, update) {
   try {
     var existing = loadCache(key) || { fetchedAt: Date.now() };
