@@ -164,16 +164,19 @@
 
   <script type="module">
     import { cache_check, loadCache, saveCache, load_artist_tags_cache, save_artist_tags_cache } from "{{ url_for('static', filename='js/cache.js') }}";
+    import { lastfmCacheKey, fetchLastfmTopArtists } from "{{ url_for('static', filename='js/lastfm.js') }}";
+    import { spotifyCacheKey, fetchSpotifyTopArtists } from "{{ url_for('static', filename='js/spotify.js') }}";
+    import { splitGeminiReply } from "{{ url_for('static', filename='js/gemini.js') }}";
     console.log('cache.js module check:', cache_check());
 
     (function () {
-      var CACHE_PREFIX = 'lastgenre_v1_';
       var SERVICE_KEY = 'lastgenre_v1_service';
       var currentArtists = [];
       // Full (up to max-limit) artist list + its identifying params for the service currently on screen.
       // Changing the limit radio just re-slices this instead of re-fetching.
       var currentFullArtists = null;
       var currentMeta = null;
+      var fetchInFlight = false;
       var serviceToggle = document.getElementById('service-toggle');
       var spotifyConnected = serviceToggle.dataset.spotifyConnected === 'true';
       var selectedService = (localStorage.getItem(SERVICE_KEY) === 'spotify') ? 'spotify' : 'lastfm';
@@ -221,16 +224,6 @@
 
       updateServiceUI();
 
-      // Cache is keyed by username/period (or time_range) only — a max-limit list covers every
-      // shorter limit, so there's no need for a separate cache entry per limit selection.
-      function lastfmCacheKey(username, period) {
-        return CACHE_PREFIX + username + '_' + period;
-      }
-
-      function spotifyCacheKey(timeRange) {
-        return 'spotify_v1_' + timeRange.replace('_term', '');
-      }
-
       function getMaxLimit() {
         var vals = Array.prototype.map.call(document.querySelectorAll('input[name="limit"]'), function (el) {
           return parseInt(el.value, 10);
@@ -262,8 +255,15 @@
 
       // Button reflects the fetchedAt of the cache entry for the currently selected
       // username/period (or time_range), not a single timestamp for the whole service.
+      // Also disabled whenever there's no username to fetch for (Last.fm only — Spotify
+      // identity comes from the OAuth session), and left alone mid-fetch.
       function updateFetchButton() {
         var btn = document.getElementById('fetch-btn');
+        if (fetchInFlight) {
+          btn.disabled = true;
+          btn.textContent = 'Fetching…';
+          return;
+        }
         var key = getCurrentCacheKey();
         var entry = key ? loadCache(key) : null;
         if (entry && entry.fetchedAt) {
@@ -271,6 +271,7 @@
         } else {
           btn.textContent = 'Fetch';
         }
+        btn.disabled = selectedService === 'lastfm' && !document.getElementById('username').value.trim();
       }
 
       function esc(str) {
@@ -296,8 +297,15 @@
       function renderArtists(allArtists, limit, username, period) {
         var artists = allArtists.slice(0, limit);
         currentArtists = artists.map(function (a) { return a.name; });
-        var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}, {label: 'Plays', cls: 'col-r'}];
-        var rows = artists.map(function (a, i) { return [i + 1, esc(a.name), a.playcount]; });
+        var cols, rows;
+        if (selectedService === 'spotify') {
+          // Spotify's /fetch-spotify-artists only returns { name }, no play counts.
+          cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}];
+          rows = artists.map(function (a, i) { return [i + 1, esc(a.name)]; });
+        } else {
+          cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}, {label: 'Plays', cls: 'col-r'}];
+          rows = artists.map(function (a, i) { return [i + 1, esc(a.name), a.playcount]; });
+        }
         document.getElementById('results-left').innerHTML =
           '<div class="section"><h2>Top ' + artists.length + ' artists for ' +
           esc(username) + ' (' + esc(period) + ')</h2>' + makeTable(cols, rows) + '</div>';
@@ -308,31 +316,43 @@
         fetchTagCounts(currentArtists);
       }
 
-      function renderSpotifyArtists(allArtists, limit, displayName, timeRange) {
-        var artists = allArtists.slice(0, limit);
-        currentArtists = artists.map(function (a) { return a.name; });
-        var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}];
-        var rows = artists.map(function (a, i) { return [i + 1, esc(a.name)]; });
-        document.getElementById('results-left').innerHTML =
-          '<div class="section"><h2>Top ' + artists.length + ' artists for ' +
-          esc(displayName) + ' (' + esc(timeRange) + ')</h2>' + makeTable(cols, rows) + '</div>';
-        document.getElementById('gemini-status').style.display = 'none';
-        document.getElementById('gemini-reply').style.display = 'none';
-        document.getElementById('gemini-reply').textContent = '';
-        document.getElementById('gemini-view-btn').style.display = 'none';
-        fetchTagCounts(currentArtists);
-      }
+
+      // function renderLastfmArtists(allArtists, limit, username, period) {
+      //   var artists = allArtists.slice(0, limit);
+      //   currentArtists = artists.map(function (a) { return a.name; });
+      //   var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}, {label: 'Plays', cls: 'col-r'}];
+      //   var rows = artists.map(function (a, i) { return [i + 1, esc(a.name), a.playcount]; });
+      //   document.getElementById('results-left').innerHTML =
+      //     '<div class="section"><h2>Top ' + artists.length + ' artists for ' +
+      //     esc(username) + ' (' + esc(period) + ')</h2>' + makeTable(cols, rows) + '</div>';
+      //   document.getElementById('gemini-status').style.display = 'none';
+      //   document.getElementById('gemini-reply').style.display = 'none';
+      //   document.getElementById('gemini-reply').textContent = '';
+      //   document.getElementById('gemini-view-btn').style.display = 'none';
+      //   fetchTagCounts(currentArtists);
+      // }
+
+      // function renderSpotifyArtists(allArtists, limit, displayName, timeRange) {
+      //   var artists = allArtists.slice(0, limit);
+      //   currentArtists = artists.map(function (a) { return a.name; });
+      //   var cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}];
+      //   var rows = artists.map(function (a, i) { return [i + 1, esc(a.name)]; });
+      //   document.getElementById('results-left').innerHTML =
+      //     '<div class="section"><h2>Top ' + artists.length + ' artists for ' +
+      //     esc(displayName) + ' (' + esc(timeRange) + ')</h2>' + makeTable(cols, rows) + '</div>';
+      //   document.getElementById('gemini-status').style.display = 'none';
+      //   document.getElementById('gemini-reply').style.display = 'none';
+      //   document.getElementById('gemini-reply').textContent = '';
+      //   document.getElementById('gemini-view-btn').style.display = 'none';
+      //   fetchTagCounts(currentArtists);
+      // }
 
       // Re-renders from the already-loaded full artist list at the currently selected limit —
       // used when only the limit radio changes, so no network round-trip is needed.
       function renderFromCache() {
         if (!currentFullArtists || !currentMeta) return;
         var limit = getLimit();
-        if (selectedService === 'spotify') {
-          renderSpotifyArtists(currentFullArtists, limit, currentMeta.displayName, currentMeta.timeRange);
-        } else {
-          renderArtists(currentFullArtists, limit, currentMeta.username, currentMeta.period);
-        }
+        renderArtists(currentFullArtists, limit, currentMeta.username, currentMeta.period);
       }
 
       function renderTagCounts(tag_counts) {
@@ -431,16 +451,9 @@
         return checked ? parseInt(checked.value, 10) : 50;
       }
 
-      function getFormValues() {
-        return {
-          username: document.getElementById('username').value.trim(),
-          period: document.getElementById('period').value,
-        };
-      }
-
       function applyLastFMCache() {
         if (selectedService !== 'lastfm') return;
-        var v = getFormValues();
+        var v = getLastfmFormValues();
         if (!v.username) {
           currentFullArtists = null;
           currentMeta = null;
@@ -469,7 +482,7 @@
         var entry = loadCache(key);
         if (entry && entry.artists) {
           currentFullArtists = entry.artists;
-          currentMeta = { displayName: entry.display_name, timeRange: timeRange };
+          currentMeta = { username: entry.display_name, period: timeRange };
           renderFromCache();
         } else {
           currentFullArtists = null;
@@ -497,97 +510,97 @@
       // Time range is a real dimension of the data, so it needs its own cache lookup.
       document.getElementById('time_range').addEventListener('change', applySpotifyCache);
 
-      function fetchLastfmArtists() {
-        var v = getFormValues();
-        if (!v.username) return;
 
-        var btn = document.getElementById('fetch-btn');
+      function startFetch()
+      {
+        fetchInFlight = true;
+        updateFetchButton();
         var errEl = document.getElementById('fetch-error');
-        btn.disabled = true;
-        btn.textContent = 'Fetching…';
         errEl.style.display = 'none';
-
-        fetch('/fetch-artists', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: v.username, period: v.period, limit: getMaxLimit() }),
-        })
-          .then(function (res) { return res.json(); })
-          .then(function (data) {
-            btn.disabled = false;
-            if (data.error) {
-              errEl.textContent = data.error;
-              errEl.style.display = 'block';
-              updateFetchButton();
-              return;
-            }
-            var now = Date.now();
-            var key = lastfmCacheKey(v.username, v.period);
-            saveCache(key, { artists: data.artists, fetchedAt: now });
-            currentFullArtists = data.artists;
-            currentMeta = { username: v.username, period: v.period };
-            renderFromCache();
-            updateFetchButton();
-          })
-          .catch(function (err) {
-            btn.disabled = false;
-            errEl.textContent = 'Error fetching artists: ' + err;
-            errEl.style.display = 'block';
-            updateFetchButton();
-          });
       }
 
-      function fetchSpotifyArtists() {
-        var timeRange = document.getElementById('time_range').value;
-        var key = spotifyCacheKey(timeRange);
-
-        var btn = document.getElementById('fetch-btn');
+      // Common end-of-fetch bookkeeping: clears the in-flight flag, shows/hides the error
+      // message, and refreshes the fetch button. Pass an error message on failure, or
+      // nothing on success.
+      function finishFetch(errorMessage) {
+        fetchInFlight = false;
         var errEl = document.getElementById('fetch-error');
-        btn.disabled = true;
-        btn.textContent = 'Fetching…';
-        errEl.style.display = 'none';
+        if (errorMessage) {
+          errEl.textContent = errorMessage;
+          errEl.style.display = 'block';
+        } else {
+          errEl.style.display = 'none';
+        }
+        updateFetchButton();
+      }
 
-        fetch('/fetch-spotify-artists', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ limit: getMaxLimit(), time_range: timeRange }),
-        })
-          .then(function (res) { return res.json(); })
+      function getLastfmFormValues() {
+        return {
+          username: document.getElementById('username').value.trim(),
+          period: document.getElementById('period').value,
+        };
+      }
+
+      function getSpotifyFormValues() {
+        return {
+          timeRange: document.getElementById('time_range').value,
+        };
+      }
+
+      // Per-service strategy maps — getFetchFormValues/fetchArtists dispatch through these
+      // instead of branching on selectedService, so adding a service is one map entry each.
+      var formValueGetters = {
+        lastfm: getLastfmFormValues,
+        spotify: getSpotifyFormValues,
+      };
+
+      function getFetchFormValues() {
+        return formValueGetters[selectedService]();
+      }
+
+      var fetchTopArtistsFns = {
+        lastfm: fetchLastfmTopArtists,
+        spotify: fetchSpotifyTopArtists,
+      };
+
+      function fetchArtists() {
+        startFetch();
+        var v = getFetchFormValues();
+
+        fetchTopArtistsFns[selectedService](getMaxLimit(), v)
           .then(function (data) {
-            btn.disabled = false;
             if (data.error) {
-              errEl.textContent = data.error;
-              errEl.style.display = 'block';
               if (data.needs_auth) {
                 spotifyConnected = false;
                 updateServiceUI();
               }
-              updateFetchButton();
+              finishFetch(data.error);
               return;
             }
             var now = Date.now();
-            saveCache(key, { artists: data.artists, display_name: data.display_name, fetchedAt: now });
-            currentFullArtists = data.artists;
-            currentMeta = { displayName: data.display_name, timeRange: timeRange };
+            if (selectedService === 'spotify') {
+              var key = spotifyCacheKey(v.timeRange);
+              saveCache(key, { artists: data.artists, display_name: data.display_name, fetchedAt: now });
+              currentFullArtists = data.artists;
+              currentMeta = { username: data.display_name, period: v.timeRange };
+            } else {
+              var key = lastfmCacheKey(v.username, v.period);
+              saveCache(key, { artists: data.artists, fetchedAt: now });
+              currentFullArtists = data.artists;
+              currentMeta = { username: v.username, period: v.period };
+            }
             renderFromCache();
-            updateFetchButton();
+            finishFetch();
           })
           .catch(function (err) {
-            btn.disabled = false;
-            errEl.textContent = 'Error fetching artists: ' + err;
-            errEl.style.display = 'block';
-            updateFetchButton();
+            finishFetch('Error fetching artists: ' + err);
           });
       }
 
       // Form submit → fetch fresh data from server
       document.getElementById('fetch-form').addEventListener('submit', function (e) {
         e.preventDefault();
-        if (selectedService === 'spotify') {
-          fetchSpotifyArtists();
-        } else {
-          fetchLastfmArtists();
-        }
+        fetchArtists();
       });
 
       // Gemini fetch
@@ -597,16 +610,6 @@
       var replyEl = document.getElementById('gemini-reply');
       var currentGeminiRecommendations = null; // parsed JSON portion of the last Gemini reply, for later use
       var currentGeminiText = null; // plain-text portion of the last Gemini reply, for later use
-
-      // Gemini replies end with a fenced ```json ... ``` block; split it from the prose above it.
-      function splitGeminiReply(text) {
-        var match = text.match(/```json\n([\s\S]*?)\n```\s*$/);
-        if (!match) return { text: text.trim(), json: null };
-        var plainText = text.slice(0, match.index).trim();
-        var json = null;
-        try { json = JSON.parse(match[1]); } catch (e) {}
-        return { text: plainText, json: json };
-      }
 
       // Recommendations modal — page 0 is the prose intro, pages 1..n are artist entries
       var modalOverlay = document.getElementById('gemini-modal-overlay');
