@@ -174,7 +174,7 @@
 
   <script type="module">
     import { loadCache, saveCache, load_artist_tags_cache, save_artist_tags_cache } from "{{ url_for('static', filename='js/cache.js') }}";
-    import { splitGeminiReply } from "{{ url_for('static', filename='js/gemini.js') }}";
+    import { createGeminiUI } from "{{ url_for('static', filename='js/geminiUI.js') }}";
 
     // lastfm.js and spotify.js are self-registering plugin modules: importing
     // them for their side effects (no named bindings needed) is what wires
@@ -182,9 +182,7 @@
     // below. See static/js/registries.js for the full registration contract
     // and how to add another service without touching this file.
     import "{{ url_for('static', filename='js/lastfm.js') }}";
-    // fetchArtwork isn't part of the registries above — it's Spotify's own catalog
-    // search for Gemini-recommendation artist/album images, called directly.
-    import { fetchArtwork } from "{{ url_for('static', filename='js/spotify.js') }}";
+    import "{{ url_for('static', filename='js/spotify.js') }}";
     import { formValueGetters, fetchTopArtistsFns, cacheKeyBuilders } from "{{ url_for('static', filename='js/registries.js') }}";
 
     (function () {
@@ -566,120 +564,21 @@
         fetchArtists();
       });
 
-      // Gemini fetch
+      // Gemini fetch — index.html just wires up the DOM elements; geminiUI.js owns
+      // fetching, status/reply state, and the paged artist modal.
       var genreInput = document.getElementById('genre');
       var geminiBtn = document.getElementById('gemini-btn');
       var statusEl = document.getElementById('gemini-status');
       var replyEl = document.getElementById('gemini-reply');
-      var currentGeminiRecommendations = null; // parsed JSON portion of the last Gemini reply, for later use
-      var currentGeminiText = null; // plain-text portion of the last Gemini reply, for later use
-      var currentGeminiArtwork = null; // Spotify artist/album images, same order/index as currentGeminiRecommendations
-
-      // Same album-shape normalization as spotify.py's _normalize_albums, so a raw
-      // recommendation's albums line up by index with currentGeminiArtwork[i].albums.
-      // The prompt asks Gemini for 'albums'/'tracks', but tolerate the 'recommended_*'
-      // names it's used before, in case a reply still comes back that way.
-      function normalizeAlbums(artist) {
-        if (Array.isArray(artist.albums)) return artist.albums;
-        if (Array.isArray(artist.recommended_albums)) return artist.recommended_albums;
-        if (artist.album && typeof artist.album === 'object') return [artist.album];
-        return [];
-      }
-
-      function getAlbumTracks(album) {
-        if (Array.isArray(album.tracks)) return album.tracks;
-        if (Array.isArray(album.recommended_tracks)) return album.recommended_tracks;
-        return [];
-      }
-
-      // Recommendations modal — page 0 is the prose intro, pages 1..n are artist entries
-      var modalOverlay = document.getElementById('gemini-modal-overlay');
-      var modalContent = document.getElementById('modal-content');
-      var modalPrev = document.getElementById('modal-prev');
-      var modalNext = document.getElementById('modal-next');
-      var modalPageIndicator = document.getElementById('modal-page-indicator');
-      var modalClose = document.getElementById('modal-close');
       var geminiViewBtn = document.getElementById('gemini-view-btn');
-      var modalPage = 0;
 
-      // artist page: a header row (Spotify artist image + bolded name), then a table of
-      // recommended albums — album art, album title, recommended track names.
-      function renderArtistPage(artist, artwork) {
-        var html = '<div class="modal-artist-header">';
-        if (artwork && artwork.image) {
-          html += '<img class="modal-artist-thumb" src="' + esc(artwork.image) + '" alt="">';
-        }
-        html += '<h3 class="modal-artist-name">' + esc(artist.name || '') + '</h3></div>';
-
-        if (artist.description) html += '<p>' + esc(artist.description) + '</p>';
-        if (artist.fit) html += '<p><em>' + esc(artist.fit) + '</em></p>';
-
-        var albums = normalizeAlbums(artist);
-        var artworkAlbums = (artwork && Array.isArray(artwork.albums)) ? artwork.albums : [];
-        if (albums.length) {
-          html += '<table class="modal-album-table"><tbody>';
-          albums.forEach(function (album, i) {
-            var albumImage = artworkAlbums[i] && artworkAlbums[i].image;
-            var tracks = getAlbumTracks(album);
-            html += '<tr>' +
-              '<td class="modal-album-art">' + (albumImage ? '<img src="' + esc(albumImage) + '" alt="">' : '') + '</td>' +
-              '<td class="modal-album-title"><h4>' + esc(album.title || '') + '</h4></td>' +
-              '<td class="modal-album-tracks">' +
-                (tracks.length
-                  ? '<ul>' + tracks.map(function (t) { return '<li>' + esc((t && t.title) || '') + '</li>'; }).join('') + '</ul>'
-                  : '') +
-              '</td></tr>';
-          });
-          html += '</tbody></table>';
-        }
-        return html;
-      }
-
-      function renderModalPage() {
-        var artists = (currentGeminiRecommendations && Array.isArray(currentGeminiRecommendations)) ? currentGeminiRecommendations : [];
-        var pageCount = 1 + artists.length;
-
-        if (modalPage === 0) {
-          modalContent.innerHTML = '<p>' + esc(currentGeminiText || '').replace(/\n+/g, '</p><p>') + '</p>';
-        } else {
-          var artist = artists[modalPage - 1];
-          var artwork = currentGeminiArtwork && currentGeminiArtwork[modalPage - 1];
-          modalContent.innerHTML = renderArtistPage(artist, artwork);
-        }
-
-        modalPrev.disabled = modalPage === 0;
-        modalNext.disabled = modalPage === pageCount - 1;
-        modalPageIndicator.textContent = (modalPage + 1) + ' / ' + pageCount;
-      }
-
-      function openGeminiModal() {
-        modalPage = 0;
-        renderModalPage();
-        modalOverlay.style.display = 'flex';
-      }
-
-      function closeGeminiModal() {
-        modalOverlay.style.display = 'none';
-      }
-
-      modalPrev.addEventListener('click', function () {
-        if (modalPage > 0) { modalPage -= 1; renderModalPage(); }
+      var geminiUI = createGeminiUI({
+        geminiBtn: geminiBtn,
+        statusEl: statusEl,
+        replyEl: replyEl,
+        geminiViewBtn: geminiViewBtn,
+        modalRoot: document.getElementById('gemini-modal-overlay'),
       });
-      modalNext.addEventListener('click', function () {
-        var artists = (currentGeminiRecommendations && Array.isArray(currentGeminiRecommendations)) ? currentGeminiRecommendations : [];
-        if (modalPage < artists.length) { modalPage += 1; renderModalPage(); }
-      });
-      modalClose.addEventListener('click', closeGeminiModal);
-      modalOverlay.addEventListener('click', function (e) {
-        if (e.target === modalOverlay) closeGeminiModal();
-      });
-      document.addEventListener('keydown', function (e) {
-        if (modalOverlay.style.display === 'none') return;
-        if (e.key === 'Escape') closeGeminiModal();
-        if (e.key === 'ArrowLeft') modalPrev.click();
-        if (e.key === 'ArrowRight') modalNext.click();
-      });
-      geminiViewBtn.addEventListener('click', openGeminiModal);
 
       // Global chart top tags — loaded automatically on page load
       var CHART_TAGS_KEY = 'lastfm_v1_chart_tags';
@@ -744,98 +643,7 @@
         var genre = genreInput.value.trim();
         if (!genre) { genreInput.focus(); return; }
         if (!currentArtists.length) return;
-
-        geminiBtn.disabled = true;
-        statusEl.textContent = 'Asking Gemini…';
-        statusEl.style.display = 'block';
-        replyEl.style.display = 'none';
-        replyEl.textContent = '';
-        geminiViewBtn.style.display = 'none';
-
-        fetch('/gemini', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ genre: genre, artists: currentArtists }),
-        })
-          .then(function (res) {
-            var reader = res.body.getReader();
-            var decoder = new TextDecoder();
-            var buffer = '';
-
-            function handleEvent(ev) {
-              switch (ev.type) {
-                case 'trying':
-                  statusEl.textContent = 'Asking Gemini… (attempt ' + ev.attempt + ')';
-                  break;
-                case 'waiting':
-                  statusEl.textContent = 'Gemini busy — retrying in ' + ev.remaining + 's…';
-                  break;
-                case 'trying_fallback':
-                  statusEl.textContent = 'Trying backup model…';
-                  break;
-                case 'done':
-                  geminiBtn.disabled = false;
-                  if (ev.fallback) {
-                    statusEl.textContent =
-                      "Gemini's main model was busy after " + ev.retries +
-                      (ev.retries === 1 ? ' retry' : ' retries') +
-                      ', so the backup model answered instead:';
-                  } else if (ev.retries > 0) {
-                    statusEl.textContent =
-                      'Gemini was busy, but responded after ' + ev.retries +
-                      (ev.retries === 1 ? ' retry' : ' retries') + ':';
-                  } else {
-                    statusEl.style.display = 'none';
-                  }
-                  var parts = splitGeminiReply(ev.reply);
-                  currentGeminiRecommendations = parts.json;
-                  currentGeminiText = parts.text;
-                  console.log('Gemini JSON portion:', currentGeminiRecommendations);
-                  replyEl.textContent = parts.text;
-                  replyEl.style.display = 'block';
-                  currentGeminiArtwork = null;
-                  geminiViewBtn.style.display =
-                    (Array.isArray(currentGeminiRecommendations) && currentGeminiRecommendations.length) ? 'inline-block' : 'none';
-                  if (Array.isArray(currentGeminiRecommendations) && currentGeminiRecommendations.length) {
-                    fetchArtwork(currentGeminiRecommendations)
-                      .then(function (artworkData) {
-                        currentGeminiArtwork = artworkData.artwork || null;
-                        renderModalPage(); // no-op if the modal isn't showing an artist page yet
-                      })
-                      .catch(function () { /* artwork is enrichment, not critical — leave images blank */ });
-                  }
-                  break;
-                case 'busy':
-                  geminiBtn.disabled = false;
-                  statusEl.textContent = 'Gemini is busy right now. Please try again in a bit.';
-                  break;
-                case 'error':
-                  geminiBtn.disabled = false;
-                  statusEl.textContent = 'Error: ' + ev.message;
-                  break;
-              }
-            }
-
-            function read() {
-              reader.read().then(function (chunk) {
-                if (chunk.done) return;
-                buffer += decoder.decode(chunk.value, { stream: true });
-                var lines = buffer.split('\n');
-                buffer = lines.pop();
-                lines.forEach(function (line) {
-                  if (line.slice(0, 6) === 'data: ') {
-                    try { handleEvent(JSON.parse(line.slice(6))); } catch (e) {}
-                  }
-                });
-                read();
-              });
-            }
-            read();
-          })
-          .catch(function (err) {
-            geminiBtn.disabled = false;
-            statusEl.textContent = 'Error contacting Gemini: ' + err;
-          });
+        geminiUI.fetchAndDisplay(genre, currentArtists);
       });
     })();
   </script>
