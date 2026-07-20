@@ -85,7 +85,7 @@
 
   <div class="results-grid" id="results-grid">
     <div>
-      <div class="service-toggle" id="service-toggle" role="group" aria-label="Data source" data-spotify-connected="{{ 'true' if spotify_connected else 'false' }}">
+      <div class="service-toggle" id="service-toggle" role="group" aria-label="Data source" data-spotify-connected="{{ 'true' if spotify_connected else 'false' }}" data-spotify-display-name="{{ spotify_display_name }}">
         <button type="button" class="active" data-service="lastfm">Last.fm</button>
         <button type="button" data-service="spotify">Spotify</button>
       </div>
@@ -153,16 +153,15 @@
           <input type="text" id="genre" placeholder="e.g. jazz">
         </div>
         <div>
-          <button id="gemini-btn" type="button">Get Recommendations</button>
+          <button id="recs-btn" type="button">Get Recommendations</button>
+          <button id="recs-view-btn" type="button" disabled>View Recommendations</button>
         </div>
       </div>
-      <p id="gemini-status" style="display:none;"></p>
-      <pre id="gemini-reply" style="display:none;"></pre>
-      <button id="gemini-view-btn" type="button" style="display:none; margin-top: 0.75rem;">View Recommendations</button>
+      <p id="recs-status" style="display:none;"></p>
     </div>
   </div>
 
-  <div class="modal-overlay" id="gemini-modal-overlay" style="display:none;">
+  <div class="modal-overlay" id="recs-modal-overlay" style="display:none;">
     <div class="modal-box">
       <button type="button" class="modal-close" id="modal-close" aria-label="Close">&times;</button>
       <button type="button" class="modal-arrow modal-arrow-left" id="modal-prev" aria-label="Previous">&lt;</button>
@@ -175,6 +174,7 @@
   <script type="module">
     import { loadCache, saveCache, load_artist_tags_cache, save_artist_tags_cache } from "{{ url_for('static', filename='js/cache.js') }}";
     import { createGeminiUI } from "{{ url_for('static', filename='js/geminiUI.js') }}";
+    import { esc } from "{{ url_for('static', filename='js/textUtils.js') }}";
 
     // lastfm.js and spotify.js are self-registering plugin modules: importing
     // them for their side effects (no named bindings needed) is what wires
@@ -288,13 +288,6 @@
         btn.disabled = selectedService === 'lastfm' && !document.getElementById('username').value.trim();
       }
 
-      function esc(str) {
-        return String(str)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
-      }
-
       // cols: [{label, cls?}]  rows: array of cell-value arrays (pre-escaped)
       function makeTable(cols, rows) {
         var ths = cols.map(function (c) {
@@ -313,7 +306,7 @@
         currentArtists = artists.map(function (a) { return a.name; });
         var cols, rows;
         if (selectedService === 'spotify') {
-          // Spotify's /fetch-spotify-artists only returns { name }, no play counts.
+          // Spotify's /spotify/top-artists only returns { name }, no play counts.
           cols = [{label: '#', cls: 'col-rank'}, {label: 'Artist'}];
           rows = artists.map(function (a, i) { return [i + 1, esc(a.name)]; });
         } else {
@@ -323,10 +316,8 @@
         document.getElementById('results-left').innerHTML =
           '<div class="section"><h2>Top ' + artists.length + ' artists for ' +
           esc(username) + ' (' + esc(period) + ')</h2>' + makeTable(cols, rows) + '</div>';
-        document.getElementById('gemini-status').style.display = 'none';
-        document.getElementById('gemini-reply').style.display = 'none';
-        document.getElementById('gemini-reply').textContent = '';
-        document.getElementById('gemini-view-btn').style.display = 'none';
+        document.getElementById('recs-status').style.display = 'none';
+        document.getElementById('recs-view-btn').disabled = true;
         fetchTagCounts(currentArtists);
       }
 
@@ -384,7 +375,7 @@
         statusEl.textContent = 'Fetching tags…';
         statusEl.style.display = 'block';
 
-        fetch('/fetch-tag-counts', {
+        fetch('/artist-tag-counts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ artist_names: uncachedNames }),
@@ -465,7 +456,7 @@
         var entry = loadCache(key);
         if (entry && entry.artists) {
           currentFullArtists = entry.artists;
-          currentMeta = { username: entry.display_name, period: v.timeRange };
+          currentMeta = { username: v.username, period: v.period };
           renderFromCache();
         } else {
           currentFullArtists = null;
@@ -539,17 +530,10 @@
               return;
             }
             var now = Date.now();
-            if (selectedService === 'spotify') {
-              var key = cacheKeyBuilders.spotify(v);
-              saveCache(key, { artists: data.artists, display_name: data.display_name, fetchedAt: now });
-              currentFullArtists = data.artists;
-              currentMeta = { username: data.display_name, period: v.timeRange };
-            } else {
-              var key = cacheKeyBuilders.lastfm(v);
-              saveCache(key, { artists: data.artists, fetchedAt: now });
-              currentFullArtists = data.artists;
-              currentMeta = { username: v.username, period: v.period };
-            }
+            var key = cacheKeyBuilders[selectedService](v);
+            currentFullArtists = data.artists;
+            saveCache(key, { artists: data.artists, fetchedAt: now });
+            currentMeta = { username: v.username, period: v.period };
             renderFromCache();
             finishFetch();
           })
@@ -564,20 +548,18 @@
         fetchArtists();
       });
 
-      // Gemini fetch — index.html just wires up the DOM elements; geminiUI.js owns
-      // fetching, status/reply state, and the paged artist modal.
+      // Recommendations section — index.html just wires up the DOM elements;
+      // geminiUI.js owns fetching, status state, and the paged artist modal.
       var genreInput = document.getElementById('genre');
-      var geminiBtn = document.getElementById('gemini-btn');
-      var statusEl = document.getElementById('gemini-status');
-      var replyEl = document.getElementById('gemini-reply');
-      var geminiViewBtn = document.getElementById('gemini-view-btn');
+      var recsBtn = document.getElementById('recs-btn');
+      var statusEl = document.getElementById('recs-status');
+      var recsViewBtn = document.getElementById('recs-view-btn');
 
-      var geminiUI = createGeminiUI({
-        geminiBtn: geminiBtn,
+      var recsUI = createGeminiUI({
+        geminiBtn: recsBtn,
         statusEl: statusEl,
-        replyEl: replyEl,
-        geminiViewBtn: geminiViewBtn,
-        modalRoot: document.getElementById('gemini-modal-overlay'),
+        geminiViewBtn: recsViewBtn,
+        modalRoot: document.getElementById('recs-modal-overlay'),
       });
 
       // Global chart top tags — loaded automatically on page load
@@ -639,11 +621,11 @@
         fetchChartTags();
       })();
 
-      geminiBtn.addEventListener('click', function () {
+      recsBtn.addEventListener('click', function () {
         var genre = genreInput.value.trim();
         if (!genre) { genreInput.focus(); return; }
         if (!currentArtists.length) return;
-        geminiUI.fetchAndDisplay(genre, currentArtists);
+        recsUI.fetchAndDisplay(genre, currentArtists);
       });
     })();
   </script>

@@ -33,7 +33,8 @@ NON_GENRE_TAGS = frozenset([
     "etherial",
     "dark",
     "live",
-    "remix"
+    "remix",
+    "gosciu dajesz"
 ])
 
 

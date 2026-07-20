@@ -14,3 +14,5 @@
 6. Fetch full Spotify play history (not just the API's top-items lists) to compute exact lifetime playtime/play counts per track. The Web API can't provide this for anything predating our integration — need the user to request their "Extended streaming history" from Spotify's account privacy settings (Download your data, uncheck "Account data", check "Extended streaming history"). Spotify emails a .zip of JSON files (e.g. Streaming_History_Audio_2018-2026_0.json) within 5-30 days, containing per-play timestamps and millisecond durations since account creation. Would need a one-off import/parse flow since it's not live API data.
 
 7. Maybe move the gemini response parsing to server-side.  Would require error handling there, and a different return code on failure.
+
+8. Fix/unify descrepancies with 'time_range'/'period' so the code path can be unified.

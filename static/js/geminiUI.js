@@ -4,13 +4,7 @@
 // returning { fetchAndDisplay(genre, artists) } — for a different provider.
 import { splitGeminiReply, fetchGeminiRecommendation } from "./gemini.js";
 import { fetchArtwork } from "./spotify.js";
-
-function esc(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
+import { esc, boldify } from "./textUtils.js";
 
 // The prompt asks Gemini for 'albums'/'tracks', but tolerate the 'recommended_*'
 // names it's used before, in case a reply still comes back that way.
@@ -27,7 +21,7 @@ function getAlbumTracks(album) {
   return [];
 }
 
-// els: { geminiBtn, statusEl, replyEl, geminiViewBtn, modalRoot }
+// els: { geminiBtn, statusEl, geminiViewBtn, modalRoot }
 // modalRoot is the modal's outer overlay element; the pieces inside it are found by
 // the classes already on the markup (see templates/index.html's modal-overlay block).
 // Returns { fetchAndDisplay(genre, artists) }. All state (recommendations, artwork,
@@ -55,8 +49,8 @@ export function createGeminiUI(els) {
     }
     html += '<h3 class="modal-artist-name">' + esc(artist.name || '') + '</h3></div>';
 
-    if (artist.description) html += '<p>' + esc(artist.description) + '</p>';
-    if (artist.fit) html += '<p><em>' + esc(artist.fit) + '</em></p>';
+    if (artist.description) html += '<p>' + boldify(artist.description) + '</p>';
+    if (artist.fit) html += '<p><em>' + boldify(artist.fit) + '</em></p>';
 
     var albums = normalizeAlbums(artist);
     var artworkAlbums = (artwork && Array.isArray(artwork.albums)) ? artwork.albums : [];
@@ -85,7 +79,7 @@ export function createGeminiUI(els) {
     var pageCount = 1 + artists.length;
 
     if (modalPage === 0) {
-      modal.content.innerHTML = '<p>' + esc(currentText || '').replace(/\n+/g, '</p><p>') + '</p>';
+      modal.content.innerHTML = '<p>' + boldify(currentText || '').replace(/\n+/g, '</p><p>') + '</p>';
     } else {
       var artist = artists[modalPage - 1];
       var artwork = currentArtwork && currentArtwork[modalPage - 1];
@@ -155,11 +149,9 @@ export function createGeminiUI(els) {
         currentRecommendations = parts.json;
         currentText = parts.text;
         console.log('Gemini JSON portion:', currentRecommendations);
-        els.replyEl.textContent = parts.text;
-        els.replyEl.style.display = 'block';
         currentArtwork = null;
-        els.geminiViewBtn.style.display =
-          (Array.isArray(currentRecommendations) && currentRecommendations.length) ? 'inline-block' : 'none';
+        els.geminiViewBtn.disabled =
+          !(Array.isArray(currentRecommendations) && currentRecommendations.length);
         if (Array.isArray(currentRecommendations) && currentRecommendations.length) {
           fetchArtwork(currentRecommendations)
             .then(function (artworkData) {
@@ -184,9 +176,7 @@ export function createGeminiUI(els) {
     els.geminiBtn.disabled = true;
     els.statusEl.textContent = 'Asking Gemini…';
     els.statusEl.style.display = 'block';
-    els.replyEl.style.display = 'none';
-    els.replyEl.textContent = '';
-    els.geminiViewBtn.style.display = 'none';
+    els.geminiViewBtn.disabled = true;
 
     return fetchGeminiRecommendation(genre, artists, handleEvent)
       .catch(function (err) {

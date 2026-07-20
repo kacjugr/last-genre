@@ -60,12 +60,13 @@ def index():
         form=form,
         spotify_time_range_choices=TIME_RANGE_CHOICES,
         spotify_connected=bool(oauth and spotify_is_connected(oauth)),
+        spotify_display_name=session.get("spotify_display_name") or "",
         spotify_error=request.args.get("spotify_error"),
     )
 
 
-@app.route("/fetch-artists", methods=["POST"])
-def fetch_artists():
+@app.route("/lastfm/top-artists", methods=["POST"])
+def lastfm_top_artists():
     data = request.get_json(silent=True) or {}
     username = (data.get("username") or "").strip()
     period = data.get("period", "overall")
@@ -94,7 +95,7 @@ def fetch_artists():
     return jsonify({"artists": artists})
 
 
-@app.route("/fetch-tag-counts", methods=["POST"])
+@app.route("/artist-tag-counts", methods=["POST"])
 def fetch_tag_counts():
     data = request.get_json(silent=True) or {}
     artist_names = data.get("artist_names") or []
@@ -163,7 +164,7 @@ def gemini():
     )
 
 
-@app.route("/gemini/artwork", methods=["POST"])
+@app.route("/spotify/artwork", methods=["POST"])
 def gemini_artwork():
     data = request.get_json(silent=True) or {}
     recommendations = data.get("recommendations") or []
@@ -229,8 +230,8 @@ def spotify_callback():
     return redirect(url_for("index"))
 
 
-@app.route("/fetch-spotify-artists", methods=["POST"])
-def fetch_spotify_artists():
+@app.route("/spotify/top-artists", methods=["POST"])
+def spotify_top_artists():
     data = request.get_json(silent=True) or {}
     time_range = data.get("time_range", "long_term")
     try:

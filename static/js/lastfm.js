@@ -10,7 +10,7 @@ export function getFormValues() {
 }
 
 export function fetchTopArtists(limit, v) {
-  return fetch('/fetch-artists', {
+  return fetch('/lastfm/top-artists', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: v.username, period: v.period, limit: limit }),
