@@ -34,9 +34,11 @@ def build_gemini_prompt(genre: str, artists: list[dict]) -> str:
         f"JSON array of the recommended artists, where each artist is an "
         f"object with a 'name' field, a 'description' field describing their style or "
         f"characteristics, and a 'fit' field explaining why the artist fits their taste. "
-        f"For each artist, also include one or two recommended albums as a sub-object "
-        f"of the artist with a 'title' field, and two or three recommended tracks "
-        f"where each is a sub-object of the album with a 'title' field. "
+        f"For each artist, also include an 'albums' field: an array of one or two "
+        f"recommended albums, where each album is an object with a 'title' field and a "
+        f"'tracks' field, an array of two or three recommended tracks, where each track "
+        f"is an object with a 'title' field. Use exactly the field names 'albums' and "
+        f"'tracks' as given here. "
     )
 
 

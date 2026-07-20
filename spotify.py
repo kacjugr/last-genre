@@ -11,7 +11,7 @@ transparently refreshes an expired access token whenever it's used.
 
 import spotipy
 from spotipy.cache_handler import FlaskSessionCacheHandler
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
 
 SCOPE = "user-top-read"
 
@@ -66,3 +66,69 @@ def get_user_top_artists(sp: spotipy.Spotify, limit: int, time_range: str) -> li
 
 def get_user_top_tracks(sp: spotipy.Spotify, limit: int, time_range: str) -> list[dict]:
     return _get_user_top_items(sp, "tracks", limit, time_range)
+
+
+# --- Catalog search for Gemini-recommendation artwork ---------------------------------
+#
+# Looking up artist/album images is a public-catalog search, not a per-user read, so it
+# uses the Client Credentials flow (app-only auth) instead of the user's OAuth session —
+# artwork should show up even for a Last.fm user who's never connected Spotify.
+
+
+def get_client_credentials_client(client_id: str, client_secret: str) -> spotipy.Spotify:
+    auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
+    return spotipy.Spotify(auth_manager=auth_manager)
+
+
+def _smallest_image(images: list[dict] | None) -> str | None:
+    return images[-1]["url"] if images else None
+
+
+def search_artist_image(sp: spotipy.Spotify, artist_name: str) -> str | None:
+    try:
+        results = sp.search(q=artist_name, type="artist", limit=1)
+    except spotipy.SpotifyException:
+        return None
+    items = results.get("artists", {}).get("items", [])
+    return _smallest_image(items[0].get("images")) if items else None
+
+
+def search_album_image(sp: spotipy.Spotify, artist_name: str, album_title: str) -> str | None:
+    try:
+        results = sp.search(q=f'artist:"{artist_name}" album:"{album_title}"', type="album", limit=1)
+    except spotipy.SpotifyException:
+        return None
+    items = results.get("albums", {}).get("items", [])
+    return _smallest_image(items[0].get("images")) if items else None
+
+
+def _normalize_albums(recommendation: dict) -> list[dict]:
+    """The prompt asks Gemini for an 'albums' array, but tolerate 'recommended_albums'
+    or a single 'album' object too, in case a reply still comes back that way.
+    """
+    for key in ("albums", "recommended_albums"):
+        albums = recommendation.get(key)
+        if isinstance(albums, list):
+            return [a for a in albums if isinstance(a, dict)]
+    single = recommendation.get("album")
+    return [single] if isinstance(single, dict) else []
+
+
+def get_recommendation_artwork(sp: spotipy.Spotify, recommendations: list[dict]) -> list[dict]:
+    """For each Gemini artist recommendation, look up its Spotify artist image and each
+    recommended album's cover art, in the same order as `recommendations`. A missing or
+    unmatched lookup is None rather than an error, so one bad match doesn't sink the batch.
+    """
+    results = []
+    for rec in recommendations:
+        name = (rec.get("name") or "").strip() if isinstance(rec, dict) else ""
+        artist_image = search_artist_image(sp, name) if name else None
+
+        albums = []
+        for album in _normalize_albums(rec) if isinstance(rec, dict) else []:
+            title = album.get("title")
+            image = search_album_image(sp, name, title) if (name and title) else None
+            albums.append({"title": title, "image": image})
+
+        results.append({"name": name, "image": artist_image, "albums": albums})
+    return results

@@ -68,6 +68,16 @@
     .modal-content { flex: 1; overflow-y: auto; }
     .modal-content pre { white-space: pre-wrap; word-break: break-word; }
     .modal-page-indicator { text-align: center; font-size: 0.75rem; color: #888; margin-top: 1rem; }
+    .modal-artist-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
+    .modal-artist-thumb { width: 48px; height: 48px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
+    .modal-artist-name { margin: 0; font-size: 1.2rem; font-weight: bold; }
+    .modal-album-table { width: 100%; border-collapse: collapse; margin-top: 1rem; table-layout: fixed; }
+    .modal-album-table td { vertical-align: top; padding: 0.5rem 0.5rem 0.5rem 0; border-top: 1px solid #eee; overflow-wrap: break-word; }
+    .modal-album-art { width: 40px; }
+    .modal-album-art img { width: 40px; height: 40px; border-radius: 4px; object-fit: cover; display: block; }
+    .modal-album-title { width: 35%; }
+    .modal-album-title h4 { margin: 0; font-size: 1rem; font-weight: bold; }
+    .modal-album-tracks ul { margin: 0; padding-left: 1.1rem; font-size: 0.9rem; }
   </style>
 </head>
 <body>
@@ -172,7 +182,9 @@
     // below. See static/js/registries.js for the full registration contract
     // and how to add another service without touching this file.
     import "{{ url_for('static', filename='js/lastfm.js') }}";
-    import "{{ url_for('static', filename='js/spotify.js') }}";
+    // fetchArtwork isn't part of the registries above — it's Spotify's own catalog
+    // search for Gemini-recommendation artist/album images, called directly.
+    import { fetchArtwork } from "{{ url_for('static', filename='js/spotify.js') }}";
     import { formValueGetters, fetchTopArtistsFns, cacheKeyBuilders } from "{{ url_for('static', filename='js/registries.js') }}";
 
     (function () {
@@ -561,6 +573,24 @@
       var replyEl = document.getElementById('gemini-reply');
       var currentGeminiRecommendations = null; // parsed JSON portion of the last Gemini reply, for later use
       var currentGeminiText = null; // plain-text portion of the last Gemini reply, for later use
+      var currentGeminiArtwork = null; // Spotify artist/album images, same order/index as currentGeminiRecommendations
+
+      // Same album-shape normalization as spotify.py's _normalize_albums, so a raw
+      // recommendation's albums line up by index with currentGeminiArtwork[i].albums.
+      // The prompt asks Gemini for 'albums'/'tracks', but tolerate the 'recommended_*'
+      // names it's used before, in case a reply still comes back that way.
+      function normalizeAlbums(artist) {
+        if (Array.isArray(artist.albums)) return artist.albums;
+        if (Array.isArray(artist.recommended_albums)) return artist.recommended_albums;
+        if (artist.album && typeof artist.album === 'object') return [artist.album];
+        return [];
+      }
+
+      function getAlbumTracks(album) {
+        if (Array.isArray(album.tracks)) return album.tracks;
+        if (Array.isArray(album.recommended_tracks)) return album.recommended_tracks;
+        return [];
+      }
 
       // Recommendations modal — page 0 is the prose intro, pages 1..n are artist entries
       var modalOverlay = document.getElementById('gemini-modal-overlay');
@@ -572,6 +602,39 @@
       var geminiViewBtn = document.getElementById('gemini-view-btn');
       var modalPage = 0;
 
+      // artist page: a header row (Spotify artist image + bolded name), then a table of
+      // recommended albums — album art, album title, recommended track names.
+      function renderArtistPage(artist, artwork) {
+        var html = '<div class="modal-artist-header">';
+        if (artwork && artwork.image) {
+          html += '<img class="modal-artist-thumb" src="' + esc(artwork.image) + '" alt="">';
+        }
+        html += '<h3 class="modal-artist-name">' + esc(artist.name || '') + '</h3></div>';
+
+        if (artist.description) html += '<p>' + esc(artist.description) + '</p>';
+        if (artist.fit) html += '<p><em>' + esc(artist.fit) + '</em></p>';
+
+        var albums = normalizeAlbums(artist);
+        var artworkAlbums = (artwork && Array.isArray(artwork.albums)) ? artwork.albums : [];
+        if (albums.length) {
+          html += '<table class="modal-album-table"><tbody>';
+          albums.forEach(function (album, i) {
+            var albumImage = artworkAlbums[i] && artworkAlbums[i].image;
+            var tracks = getAlbumTracks(album);
+            html += '<tr>' +
+              '<td class="modal-album-art">' + (albumImage ? '<img src="' + esc(albumImage) + '" alt="">' : '') + '</td>' +
+              '<td class="modal-album-title"><h4>' + esc(album.title || '') + '</h4></td>' +
+              '<td class="modal-album-tracks">' +
+                (tracks.length
+                  ? '<ul>' + tracks.map(function (t) { return '<li>' + esc((t && t.title) || '') + '</li>'; }).join('') + '</ul>'
+                  : '') +
+              '</td></tr>';
+          });
+          html += '</tbody></table>';
+        }
+        return html;
+      }
+
       function renderModalPage() {
         var artists = (currentGeminiRecommendations && Array.isArray(currentGeminiRecommendations)) ? currentGeminiRecommendations : [];
         var pageCount = 1 + artists.length;
@@ -580,10 +643,8 @@
           modalContent.innerHTML = '<p>' + esc(currentGeminiText || '').replace(/\n+/g, '</p><p>') + '</p>';
         } else {
           var artist = artists[modalPage - 1];
-          var pre = document.createElement('pre');
-          pre.textContent = JSON.stringify(artist, null, 2);
-          modalContent.innerHTML = '';
-          modalContent.appendChild(pre);
+          var artwork = currentGeminiArtwork && currentGeminiArtwork[modalPage - 1];
+          modalContent.innerHTML = renderArtistPage(artist, artwork);
         }
 
         modalPrev.disabled = modalPage === 0;
@@ -732,8 +793,17 @@
                   console.log('Gemini JSON portion:', currentGeminiRecommendations);
                   replyEl.textContent = parts.text;
                   replyEl.style.display = 'block';
+                  currentGeminiArtwork = null;
                   geminiViewBtn.style.display =
                     (Array.isArray(currentGeminiRecommendations) && currentGeminiRecommendations.length) ? 'inline-block' : 'none';
+                  if (Array.isArray(currentGeminiRecommendations) && currentGeminiRecommendations.length) {
+                    fetchArtwork(currentGeminiRecommendations)
+                      .then(function (artworkData) {
+                        currentGeminiArtwork = artworkData.artwork || null;
+                        renderModalPage(); // no-op if the modal isn't showing an artist page yet
+                      })
+                      .catch(function () { /* artwork is enrichment, not critical — leave images blank */ });
+                  }
                   break;
                 case 'busy':
                   geminiBtn.disabled = false;

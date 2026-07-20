@@ -17,7 +17,9 @@ from spotify import (
     TIME_RANGE_CHOICES,
     TOKEN_SESSION_KEY,
     get_client as get_spotify_client,
+    get_client_credentials_client,
     get_current_user as get_spotify_current_user,
+    get_recommendation_artwork,
     get_user_top_artists as get_spotify_top_artists,
     is_connected as spotify_is_connected,
     make_oauth as make_spotify_oauth,
@@ -159,6 +161,22 @@ def gemini():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.route("/gemini/artwork", methods=["POST"])
+def gemini_artwork():
+    data = request.get_json(silent=True) or {}
+    recommendations = data.get("recommendations") or []
+
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID")
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return jsonify({"error": "Server is missing Spotify API credentials."}), 500
+
+    sp = get_client_credentials_client(client_id, client_secret)
+    artwork = get_recommendation_artwork(sp, recommendations)
+
+    return jsonify({"artwork": artwork})
 
 
 @app.route("/spotify/login", methods=["GET"])
