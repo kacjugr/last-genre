@@ -1,6 +1,6 @@
-// Self-registers into the shared service registries — see registries.js for
+// Self-registers into the shared service registry — see registries.js for
 // the registration contract and how to add another service.
-import { formValueGetters, fetchTopArtistsFns, cacheKeyBuilders } from "./registries.js";
+import { registeredServices } from "./registries.js";
 
 export function getFormValues() {
   return {
@@ -21,6 +21,8 @@ export function cacheKey(v) {
   return 'lastfm_v1_' + v.username + '_' + v.period;
 }
 
-formValueGetters.lastfm = getFormValues;
-fetchTopArtistsFns.lastfm = fetchTopArtists;
-cacheKeyBuilders.lastfm = cacheKey;
+var callables = {};
+callables.getFormValues = getFormValues;
+callables.fetchTopArtists = fetchTopArtists;
+callables.cacheKey = cacheKey;
+registeredServices.lastfm = callables;

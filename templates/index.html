@@ -99,29 +99,20 @@
         <button type="button" id="spotify-disconnect-btn">Disconnect Spotify</button>
       </div>
       <form id="fetch-form">
-        <div id="lastfm-fields">
-          <div>
-            <label for="username">Last.fm username</label>
-            <input type="text" id="username" name="username" value="{{ form.username }}" required>
-          </div>
-          <div>
-            <label for="period">Period</label>
-            <select id="period" name="period">
-              {% for choice in lastfm_period_choices %}
-                <option value="{{ choice }}" {% if choice == form.period %}selected{% endif %}>{{ choice }}</option>
-              {% endfor %}
-            </select>
-          </div>
+        <div>
+          <label for="username" id="username-label">Last.fm username</label>
+          <input type="text" id="username" name="username" value="{{ form.username }}" required>
         </div>
-        <div id="spotify-fields" style="display:none;">
-          <div>
-            <label for="time_range">Time range</label>
-            <select id="time_range" name="time_range">
-              {% for choice in spotify_time_range_choices %}
-                <option value="{{ choice }}" {% if choice == 'long_term' %}selected{% endif %}>{{ choice }}</option>
-              {% endfor %}
-            </select>
-          </div>
+        <div>
+          <label for="period">Period</label>
+          <select id="period" name="period">
+            {% for choice in lastfm_period_choices %}
+              <option value="{{ choice }}" data-service="lastfm" {% if choice == form.period %}data-default="true" selected{% endif %}>{{ choice }}</option>
+            {% endfor %}
+            {% for choice in spotify_time_range_choices %}
+              <option value="{{ choice }}" data-service="spotify" {% if choice == 'long_term' %}data-default="true"{% endif %}>{{ choice }}</option>
+            {% endfor %}
+          </select>
         </div>
         <div>
           <label>Number of artists</label>
@@ -183,10 +174,9 @@
     // and how to add another service without touching this file.
     import "{{ url_for('static', filename='js/lastfm.js') }}";
     import "{{ url_for('static', filename='js/spotify.js') }}";
-    import { formValueGetters, fetchTopArtistsFns, cacheKeyBuilders } from "{{ url_for('static', filename='js/registries.js') }}";
+    import { registeredServices } from "{{ url_for('static', filename='js/registries.js') }}";
 
     (function () {
-      var SERVICE_KEY = 'lastgenre_v1_service';
       var currentArtists = [];
       // Full (up to max-limit) artist list + its identifying params for the service currently on screen.
       // Changing the limit radio just re-slices this instead of re-fetching.
@@ -195,16 +185,56 @@
       var fetchInFlight = false;
       var serviceToggle = document.getElementById('service-toggle');
       var spotifyConnected = serviceToggle.dataset.spotifyConnected === 'true';
-      var selectedService = (localStorage.getItem(SERVICE_KEY) === 'spotify') ? 'spotify' : 'lastfm';
+
+      // Make sure we have at least one TopArtists service registered, otherwise we
+      // can't load anything to the page 
+      var registeredServiceKeys = Object.keys(registeredServices);
+      if (registeredServiceKeys.length === 0) {
+        console.warn('No services registered in registeredServices — check that lastfm.js/spotify.js loaded and self-registered correctly. Aborting setup.');
+        return;
+      }
+
+      // Load our selected TopArtists service from localStorage, falling back to the first
+      // self-registered service (not a hardcoded name) if there's no stored preference,
+      // or it no longer matches a registered service.
+      var SERVICE_KEY = 'lastgenre_v1_service';
+      var storedService = localStorage.getItem(SERVICE_KEY);
+      var selectedService = (storedService in registeredServices) ? storedService : registeredServiceKeys[0];
+      // The '#username' field is shared: typed by hand for Last.fm, but read-only and
+      // filled with the connected account's display name for Spotify. This remembers
+      // whatever was typed for Last.fm so it's restored when switching back to it.
+      var lastfmUsername = document.getElementById('username').value;
+
+      // The 'period' select holds both services' options at once (tagged with
+      // data-service); switching services shows only the matching ones and resets
+      // the value to that service's default, since the two vocabularies don't overlap.
+      function updatePeriodOptions() {
+        var periodSelect = document.getElementById('period');
+        var defaultValue = null;
+        periodSelect.querySelectorAll('option').forEach(function (opt) {
+          var matches = opt.dataset.service === selectedService;
+          opt.hidden = !matches;
+          opt.disabled = !matches;
+          if (matches && opt.dataset.default === 'true') defaultValue = opt.value;
+        });
+        if (defaultValue !== null) periodSelect.value = defaultValue;
+      }
 
       function updateServiceUI() {
         var isSpotify = selectedService === 'spotify';
         serviceToggle.querySelectorAll('button').forEach(function (b) {
           b.classList.toggle('active', b.dataset.service === selectedService);
         });
-        document.getElementById('lastfm-fields').style.display = isSpotify ? 'none' : '';
-        document.getElementById('spotify-fields').style.display = isSpotify ? '' : 'none';
-        document.getElementById('username').required = !isSpotify;
+        updatePeriodOptions();
+
+        var usernameInput = document.getElementById('username');
+        usernameInput.required = !isSpotify;
+        usernameInput.readOnly = isSpotify;
+        document.getElementById('username-label').textContent =
+          isSpotify ? 'Connected Spotify account' : 'Last.fm username';
+        usernameInput.value = isSpotify
+          ? (spotifyConnected ? (serviceToggle.dataset.spotifyDisplayName || '') : '')
+          : lastfmUsername;
 
         var needsConnect = isSpotify && !spotifyConnected;
         document.getElementById('spotify-connect').style.display = needsConnect ? 'block' : 'none';
@@ -247,14 +277,14 @@
         return vals.length ? Math.max.apply(null, vals) : 500;
       }
 
-      // The cache key for whatever username/period (or time_range) is currently selected in the
-      // form — each such key carries its own fetchedAt, since different periods are fetched
-      // independently and can go stale at different times. cacheKeyBuilders comes from
-      // registries.js, populated by lastfm.js/spotify.js self-registering.
+      // The cache key for whatever username/period is currently selected in the form —
+      // each such key carries its own fetchedAt, since different periods are fetched
+      // independently and can go stale at different times. registeredServices comes
+      // from registries.js, populated by lastfm.js/spotify.js self-registering.
       function getCurrentCacheKey() {
         var v = getFetchFormValues();
         if (selectedService === 'lastfm' && !v.username) return null;
-        return cacheKeyBuilders[selectedService](v);
+        return registeredServices[selectedService].cacheKey(v);
       }
 
       function ageString(fetchedAt) {
@@ -268,7 +298,7 @@
       }
 
       // Button reflects the fetchedAt of the cache entry for the currently selected
-      // username/period (or time_range), not a single timestamp for the whole service.
+      // username/period, not a single timestamp for the whole service.
       // Also disabled whenever there's no username to fetch for (Last.fm only — Spotify
       // identity comes from the OAuth session), and left alone mid-fetch.
       function updateFetchButton() {
@@ -375,7 +405,7 @@
         statusEl.textContent = 'Fetching tags…';
         statusEl.style.display = 'block';
 
-        fetch('/artist-tag-counts', {
+        fetch('/lastfm/artist-tag-counts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ artist_names: uncachedNames }),
@@ -427,7 +457,7 @@
 
       function applyLastFMCache() {
         if (selectedService !== 'lastfm') return;
-        var v = formValueGetters.lastfm();
+        var v = registeredServices.lastfm.getFormValues();
         if (!v.username) {
           currentFullArtists = null;
           currentMeta = null;
@@ -435,7 +465,7 @@
           updateFetchButton();
           return;
         }
-        var key = cacheKeyBuilders.lastfm(v);
+        var key = registeredServices.lastfm.cacheKey(v);
         var entry = loadCache(key);
         if (entry && entry.artists) {
           currentFullArtists = entry.artists;
@@ -451,8 +481,8 @@
 
       function applySpotifyCache() {
         if (selectedService !== 'spotify') return;
-        var v = formValueGetters.spotify();
-        var key = cacheKeyBuilders.spotify(v);
+        var v = registeredServices.spotify.getFormValues();
+        var key = registeredServices.spotify.cacheKey(v);
         var entry = loadCache(key);
         if (entry && entry.artists) {
           currentFullArtists = entry.artists;
@@ -477,12 +507,16 @@
       ['username', 'period'].forEach(function (id) {
         document.getElementById(id).addEventListener('change', applyLastFMCache);
       });
-      document.getElementById('username').addEventListener('input', applyLastFMCache);
+      document.getElementById('username').addEventListener('input', function () {
+        lastfmUsername = this.value;
+        applyLastFMCache();
+      });
 
       // Limit only changes what's displayed, not what's fetched — re-slice the cached full list.
       document.getElementById('limit-group').addEventListener('change', renderFromCache);
-      // Time range is a real dimension of the data, so it needs its own cache lookup.
-      document.getElementById('time_range').addEventListener('change', applySpotifyCache);
+      // The shared 'period' select also drives Spotify's cache lookup — each guards on
+      // selectedService internally, so only the active service's handler does anything.
+      document.getElementById('period').addEventListener('change', applySpotifyCache);
 
 
       function startFetch()
@@ -508,18 +542,18 @@
         updateFetchButton();
       }
 
-      // formValueGetters/fetchTopArtistsFns come from registries.js, populated by
-      // lastfm.js/spotify.js self-registering — adding a service means writing a new
-      // module like those, not touching this dispatch logic.
+      // registeredServices comes from registries.js, populated by lastfm.js/spotify.js
+      // self-registering — adding a service means writing a new module like those,
+      // not touching this dispatch logic.
       function getFetchFormValues() {
-        return formValueGetters[selectedService]();
+        return registeredServices[selectedService].getFormValues();
       }
 
       function fetchArtists() {
         startFetch();
         var v = getFetchFormValues();
 
-        fetchTopArtistsFns[selectedService](getMaxLimit(), v)
+        registeredServices[selectedService].fetchTopArtists(getMaxLimit(), v)
           .then(function (data) {
             if (data.error) {
               if (data.needs_auth) {
@@ -530,7 +564,7 @@
               return;
             }
             var now = Date.now();
-            var key = cacheKeyBuilders[selectedService](v);
+            var key = registeredServices[selectedService].cacheKey(v);
             currentFullArtists = data.artists;
             saveCache(key, { artists: data.artists, fetchedAt: now });
             currentMeta = { username: v.username, period: v.period };
@@ -590,7 +624,7 @@
         chartTagsStatus.textContent = 'Loading…';
         chartTagsStatus.style.display = 'block';
 
-        fetch('/chart-top-tags')
+        fetch('/lastfm/chart-top-tags')
           .then(function (res) { return res.json(); })
           .then(function (data) {
             if (data.error) {

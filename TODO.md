@@ -16,3 +16,7 @@
 7. Maybe move the gemini response parsing to server-side.  Would require error handling there, and a different return code on failure.
 
 8. Fix/unify descrepancies with 'time_range'/'period' so the code path can be unified.
+
+9. Add unit testing.  Consider NodeJS, Vitest
+
+10. Add linting and browser automation (Playtest)
