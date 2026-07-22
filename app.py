@@ -25,14 +25,11 @@ LIMIT_CHOICES = {"choices": [10, 25, 50, 100, 250, 500], "default": 50}
 
 @app.route("/", methods=["GET"])
 def index():
-    spotify_connected, spotify_display_name = get_connection_status()
     return render_template(
         "index.html",
         period_choices=period_choices,
         limit_choices=LIMIT_CHOICES,
-        spotify_connected=spotify_connected,
-        spotify_display_name=spotify_display_name,
-        spotify_error=request.args.get("spotify_error"),
+        spotify_status=get_connection_status(),
     )
 
 

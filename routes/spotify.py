@@ -39,12 +39,17 @@ def _oauth():
     return make_oauth(session, client_id, client_secret, _redirect_uri())
 
 
-def get_connection_status() -> tuple[bool, str]:
+def get_connection_status() -> dict:
     """The only thing the rest of the app needs to know about Spotify: whether the
-    current session is connected, and the display name to show if so."""
+    current session is connected, the display name to show if so, and any OAuth
+    error to surface (set via the ?spotify_error= redirect from /callback)."""
     oauth = _oauth()
     connected = bool(oauth and is_connected(oauth))
-    return connected, session.get("spotify_display_name") or ""
+    return {
+        "connected": connected,
+        "display_name": session.get("spotify_display_name") or "",
+        "error": request.args.get("spotify_error"),
+    }
 
 
 @spotify_bp.route("/login", methods=["GET"])

@@ -85,12 +85,12 @@
 
   <div class="results-grid" id="results-grid">
     <div>
-      <div class="service-toggle" id="service-toggle" role="group" aria-label="Data source" data-spotify-connected="{{ 'true' if spotify_connected else 'false' }}" data-spotify-display-name="{{ spotify_display_name }}">
+      <div class="service-toggle" id="service-toggle" role="group" aria-label="Data source" data-spotify-connected="{{ 'true' if spotify_status.connected else 'false' }}" data-spotify-display-name="{{ spotify_status.display_name }}">
         <button type="button" class="active" data-service="lastfm">Last.fm</button>
         <button type="button" data-service="spotify">Spotify</button>
       </div>
       <div id="fetch-error" class="error" style="display:none;"></div>
-      <div id="spotify-error" class="error"{% if not spotify_error %} style="display:none;"{% endif %}>{{ spotify_error or '' }}</div>
+      <div id="spotify-error" class="error"{% if not spotify_status.error %} style="display:none;"{% endif %}>{{ spotify_status.error or '' }}</div>
       <div id="spotify-connect" style="display:none;">
         <p>Connect your Spotify account to fetch your top artists.</p>
         <a href="/spotify/login"><button type="button">Connect Spotify</button></a>
@@ -543,10 +543,13 @@
       ['username', 'period'].forEach(function (id) {
         document.getElementById(id).addEventListener('change', applyLastFMCache);
       });
+      // Just track what's typed as it's typed — cheap, and needed so switching to
+      // Spotify (which overwrites #username with its display name) and back
+      // restores this rather than losing it. The expensive work (persisting it and
+      // checking the cache) only happens on submit — see fetchArtists() — not on
+      // every keystroke.
       document.getElementById('username').addEventListener('input', function () {
         lastfmUsername = this.value;
-        saveUsername('lastfm', lastfmUsername);
-        applyLastFMCache();
       });
 
       // Limit only changes what's displayed, not what's fetched — re-slice the cached full list.
@@ -589,6 +592,14 @@
       function fetchArtists() {
         startFetch();
         var v = getFetchFormValues();
+        // Commit the typed username now — on submit (Enter in the field, or a Fetch/
+        // Refresh click), not on every keystroke. Spotify's "username" is the OAuth
+        // display name, already cached once when the connection succeeded, so there's
+        // nothing to commit here for that service.
+        if (selectedService === 'lastfm') {
+          lastfmUsername = v.username;
+          saveUsername('lastfm', v.username);
+        }
 
         curTAService.fetchTopArtists(getMaxLimit(), v)
           .then(function (data) {
