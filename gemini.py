@@ -45,6 +45,8 @@ def build_gemini_prompt(genre: str, artists: list[dict]) -> str:
 def ask_gemini(prompt: str, api_key: str, model: str = GEMINI_MODEL) -> str:
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(model=model, contents=prompt)
+    if response.text is None:
+        raise RuntimeError("Gemini returned an empty response.")
     return response.text
 
 

@@ -43,7 +43,7 @@ def get_client(oauth: SpotifyOAuth) -> spotipy.Spotify:
     return spotipy.Spotify(auth_manager=oauth)
 
 
-def get_current_user(sp: spotipy.Spotify) -> dict:
+def get_current_user(sp: spotipy.Spotify) -> dict | None:
     return sp.me()
 
 
@@ -55,6 +55,8 @@ def _get_user_top_items(sp: spotipy.Spotify, item_type: str, limit: int, time_ra
     items.extend(results["items"])
     while results.get("next") and len(items) < limit:
         results = sp.next(results)
+        if results is None:
+            break
         items.extend(results["items"])
 
     return items[:limit]
@@ -89,6 +91,8 @@ def search_artist_image(sp: spotipy.Spotify, artist_name: str) -> str | None:
         results = sp.search(q=artist_name, type="artist", limit=1)
     except spotipy.SpotifyException:
         return None
+    if results is None:
+        return None
     items = results.get("artists", {}).get("items", [])
     return _smallest_image(items[0].get("images")) if items else None
 
@@ -97,6 +101,8 @@ def search_album_image(sp: spotipy.Spotify, artist_name: str, album_title: str) 
     try:
         results = sp.search(q=f'artist:"{artist_name}" album:"{album_title}"', type="album", limit=1)
     except spotipy.SpotifyException:
+        return None
+    if results is None:
         return None
     items = results.get("albums", {}).get("items", [])
     return _smallest_image(items[0].get("images")) if items else None

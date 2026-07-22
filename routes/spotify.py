@@ -94,7 +94,7 @@ def callback():
 
     try:
         user = get_current_user(get_client(oauth))
-        session["spotify_display_name"] = user.get("display_name") or user.get("id")
+        session["spotify_display_name"] = (user.get("display_name") or user.get("id")) if user else None
     except (spotipy.SpotifyException, requests.RequestException):
         session["spotify_display_name"] = None
 
