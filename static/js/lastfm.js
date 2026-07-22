@@ -18,11 +18,19 @@ export function fetchTopArtists(limit, v) {
 }
 
 export function cacheKey(v) {
+  // No username means there's nothing to have cached yet — let callers treat a
+  // null key as "no cache entry" rather than special-casing Last.fm themselves.
+  if (!v.username) return null;
   return 'lastfm_v1_' + v.username + '_' + v.period;
+}
+
+export function getServiceName() {
+  return 'Last.fm';
 }
 
 var callables = {};
 callables.getFormValues = getFormValues;
 callables.fetchTopArtists = fetchTopArtists;
 callables.cacheKey = cacheKey;
+callables.getServiceName = getServiceName;
 registeredServices.lastfm = callables;

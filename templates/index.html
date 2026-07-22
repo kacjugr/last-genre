@@ -101,24 +101,26 @@
       <form id="fetch-form">
         <div>
           <label for="username" id="username-label">Last.fm username</label>
-          <input type="text" id="username" name="username" value="{{ form.username }}" required>
+          <input type="text" id="username" name="username" required>
         </div>
         <div>
           <label for="period">Period</label>
           <select id="period" name="period">
-            {% for choice in lastfm_period_choices %}
-              <option value="{{ choice }}" data-service="lastfm" {% if choice == form.period %}data-default="true" selected{% endif %}>{{ choice }}</option>
-            {% endfor %}
-            {% for choice in spotify_time_range_choices %}
-              <option value="{{ choice }}" data-service="spotify" {% if choice == 'long_term' %}data-default="true"{% endif %}>{{ choice }}</option>
+            {% for service, info in period_choices.items() %}
+              {% for choice in info.choices %}
+                <option value="{{ choice }}" data-service="{{ service }}"
+                  {% if choice == info.default %}data-default="true"{% endif %}
+                  {% if service == 'lastfm' and choice == info.default %}selected{% endif %}
+                >{{ choice }}</option>
+              {% endfor %}
             {% endfor %}
           </select>
         </div>
         <div>
           <label>Number of artists</label>
           <div class="radio-group" id="limit-group">
-            {% for choice in limit_choices %}
-              <label><input type="radio" name="limit" value="{{ choice }}" {% if choice == form.limit %}checked{% endif %}> {{ choice }}</label>
+            {% for choice in limit_choices.choices %}
+              <label><input type="radio" name="limit" value="{{ choice }}" {% if choice == limit_choices.default %}checked{% endif %}> {{ choice }}</label>
             {% endfor %}
           </div>
         </div>
@@ -163,17 +165,25 @@
   </div>
 
   <script type="module">
+    // lastfm.js and spotify.js are self-registering plugin modules: importing
+    // them for their side effects (no named bindings needed) is what wires
+    // their form-value/fetch/cache-key functions into the shared registry
+    // below. See static/js/registries.js for the full registration contract
+    // and how to add another service without touching this file.
+    //
+    // Listed first, in display order (matching the service-toggle buttons), so
+    // registration order is authoritative — this is what Object.keys(registeredServices)[0]
+    // (the default service) actually reflects. Otherwise, ES modules evaluate
+    // dependencies depth-first regardless of import order here: geminiUI.js
+    // below also imports spotify.js (for fetchArtwork), so if these two lines
+    // moved after it, spotify.js would end up registering first even though it's
+    // listed second.
+    import "{{ url_for('static', filename='js/lastfm.js') }}";
+    import "{{ url_for('static', filename='js/spotify.js') }}";
+
     import { loadCache, saveCache, load_artist_tags_cache, save_artist_tags_cache } from "{{ url_for('static', filename='js/cache.js') }}";
     import { createGeminiUI } from "{{ url_for('static', filename='js/geminiUI.js') }}";
     import { esc } from "{{ url_for('static', filename='js/textUtils.js') }}";
-
-    // lastfm.js and spotify.js are self-registering plugin modules: importing
-    // them for their side effects (no named bindings needed) is what wires
-    // their form-value/fetch/cache-key functions into the shared registries
-    // below. See static/js/registries.js for the full registration contract
-    // and how to add another service without touching this file.
-    import "{{ url_for('static', filename='js/lastfm.js') }}";
-    import "{{ url_for('static', filename='js/spotify.js') }}";
     import { registeredServices } from "{{ url_for('static', filename='js/registries.js') }}";
 
     (function () {
@@ -194,16 +204,54 @@
         return;
       }
 
+      var TOPARTISTS_SERVICE_KEY = 'topartists_v1_service';
+      var selectedService;
+      var curTAService; // registeredServices[selectedService] — avoids repeating that lookup everywhere
+
+      // Sets selectedService/curTAService together and persists the choice, so callers
+      // never need to touch registeredServices[...] or localStorage themselves.
+      function switchTopArtistService(service) {
+        selectedService = service;
+        curTAService = registeredServices[service];
+        try { localStorage.setItem(TOPARTISTS_SERVICE_KEY, service); } catch (e) {}
+      }
+
       // Load our selected TopArtists service from localStorage, falling back to the first
       // self-registered service (not a hardcoded name) if there's no stored preference,
       // or it no longer matches a registered service.
-      var SERVICE_KEY = 'lastgenre_v1_service';
-      var storedService = localStorage.getItem(SERVICE_KEY);
-      var selectedService = (storedService in registeredServices) ? storedService : registeredServiceKeys[0];
+      var storedService = localStorage.getItem(TOPARTISTS_SERVICE_KEY);
+      switchTopArtistService((storedService in registeredServices) ? storedService : registeredServiceKeys[0]);
+
+      // Submitted usernames are cached under one localStorage key, as sub-items keyed
+      // by service name — e.g. {"lastfm": "kacjugr"} — rather than one key per service.
+      var TOPARTISTS_USERNAMES_KEY = 'topartists_v1_usernames';
+
+      function loadUsernames() {
+        try {
+          var raw = localStorage.getItem(TOPARTISTS_USERNAMES_KEY);
+          return raw ? JSON.parse(raw) : {};
+        } catch (e) { return {}; }
+      }
+
+      function saveUsername(service, username) {
+        var usernames = loadUsernames();
+        usernames[service] = username;
+        try { localStorage.setItem(TOPARTISTS_USERNAMES_KEY, JSON.stringify(usernames)); } catch (e) {}
+      }
+
       // The '#username' field is shared: typed by hand for Last.fm, but read-only and
-      // filled with the connected account's display name for Spotify. This remembers
-      // whatever was typed for Last.fm so it's restored when switching back to it.
-      var lastfmUsername = document.getElementById('username').value;
+      // filled with the connected account's display name for Spotify. Whatever's typed
+      // for Last.fm is cached above so it survives reloads and is restored when
+      // switching back to it.
+      var lastfmUsername = loadUsernames().lastfm || '';
+
+      // A successful Spotify connection only becomes visible client-side as a fresh
+      // page load (the OAuth callback redirects back to index() after setting the
+      // session's display name) — so this is where we know the connection just
+      // succeeded, and cache the display name the same way Last.fm's username is.
+      if (spotifyConnected && serviceToggle.dataset.spotifyDisplayName) {
+        saveUsername('spotify', serviceToggle.dataset.spotifyDisplayName);
+      }
 
       // The 'period' select holds both services' options at once (tagged with
       // data-service); switching services shows only the matching ones and resets
@@ -230,8 +278,7 @@
         var usernameInput = document.getElementById('username');
         usernameInput.required = !isSpotify;
         usernameInput.readOnly = isSpotify;
-        document.getElementById('username-label').textContent =
-          isSpotify ? 'Connected Spotify account' : 'Last.fm username';
+        document.getElementById('username-label').textContent = curTAService.getServiceName() + ' account';
         usernameInput.value = isSpotify
           ? (spotifyConnected ? (serviceToggle.dataset.spotifyDisplayName || '') : '')
           : lastfmUsername;
@@ -257,8 +304,7 @@
       serviceToggle.addEventListener('click', function (e) {
         var btn = e.target.closest('button[data-service]');
         if (!btn || btn.classList.contains('active')) return;
-        selectedService = btn.dataset.service;
-        try { localStorage.setItem(SERVICE_KEY, selectedService); } catch (e) {}
+        switchTopArtistService(btn.dataset.service);
         document.getElementById('spotify-error').style.display = 'none';
         updateServiceUI();
         if (selectedService === 'spotify') {
@@ -275,16 +321,6 @@
           return parseInt(el.value, 10);
         });
         return vals.length ? Math.max.apply(null, vals) : 500;
-      }
-
-      // The cache key for whatever username/period is currently selected in the form —
-      // each such key carries its own fetchedAt, since different periods are fetched
-      // independently and can go stale at different times. registeredServices comes
-      // from registries.js, populated by lastfm.js/spotify.js self-registering.
-      function getCurrentCacheKey() {
-        var v = getFetchFormValues();
-        if (selectedService === 'lastfm' && !v.username) return null;
-        return registeredServices[selectedService].cacheKey(v);
       }
 
       function ageString(fetchedAt) {
@@ -308,7 +344,7 @@
           btn.textContent = 'Fetching…';
           return;
         }
-        var key = getCurrentCacheKey();
+        var key = curTAService.cacheKey(getFetchFormValues());
         var entry = key ? loadCache(key) : null;
         if (entry && entry.fetchedAt) {
           btn.textContent = 'Refresh (' + ageString(entry.fetchedAt) + ')';
@@ -509,6 +545,7 @@
       });
       document.getElementById('username').addEventListener('input', function () {
         lastfmUsername = this.value;
+        saveUsername('lastfm', lastfmUsername);
         applyLastFMCache();
       });
 
@@ -542,18 +579,18 @@
         updateFetchButton();
       }
 
-      // registeredServices comes from registries.js, populated by lastfm.js/spotify.js
-      // self-registering — adding a service means writing a new module like those,
-      // not touching this dispatch logic.
+      // curTAService (registeredServices[selectedService]) comes from registries.js,
+      // populated by lastfm.js/spotify.js self-registering — adding a service means
+      // writing a new module like those, not touching this dispatch logic.
       function getFetchFormValues() {
-        return registeredServices[selectedService].getFormValues();
+        return curTAService.getFormValues();
       }
 
       function fetchArtists() {
         startFetch();
         var v = getFetchFormValues();
 
-        registeredServices[selectedService].fetchTopArtists(getMaxLimit(), v)
+        curTAService.fetchTopArtists(getMaxLimit(), v)
           .then(function (data) {
             if (data.error) {
               if (data.needs_auth) {
@@ -564,7 +601,7 @@
               return;
             }
             var now = Date.now();
-            var key = registeredServices[selectedService].cacheKey(v);
+            var key = curTAService.cacheKey(v);
             currentFullArtists = data.artists;
             saveCache(key, { artists: data.artists, fetchedAt: now });
             currentMeta = { username: v.username, period: v.period };

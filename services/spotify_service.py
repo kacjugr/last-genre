@@ -40,4 +40,4 @@ def get_top_artists(data: dict, context: dict) -> tuple[dict, int]:
 
 
 top_artists_fns["spotify"] = get_top_artists
-period_choices["spotify"] = TIME_RANGE_CHOICES
+period_choices["spotify"] = {"choices": TIME_RANGE_CHOICES, "default": "long_term"}

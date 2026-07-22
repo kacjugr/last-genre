@@ -20,23 +20,16 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 app.register_blueprint(lastfm_bp)
 app.register_blueprint(spotify_bp)
 
-LIMIT_CHOICES = [10, 25, 50, 100, 250, 500]
+LIMIT_CHOICES = {"choices": [10, 25, 50, 100, 250, 500], "default": 50}
 
 
 @app.route("/", methods=["GET"])
 def index():
-    form = {
-        "username": "kacjugr",
-        "limit": 50,
-        "period": "overall",
-    }
     spotify_connected, spotify_display_name = get_connection_status()
     return render_template(
         "index.html",
-        lastfm_period_choices=period_choices["lastfm"],
+        period_choices=period_choices,
         limit_choices=LIMIT_CHOICES,
-        form=form,
-        spotify_time_range_choices=period_choices["spotify"],
         spotify_connected=spotify_connected,
         spotify_display_name=spotify_display_name,
         spotify_error=request.args.get("spotify_error"),

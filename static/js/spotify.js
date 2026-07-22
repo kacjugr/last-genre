@@ -24,6 +24,10 @@ export function cacheKey(v) {
   return 'spotify_v1_' + v.username + '_' + v.period.replace('_term', '');
 }
 
+export function getServiceName() {
+  return 'Spotify';
+}
+
 // Looks up artist/album artwork for a list of Gemini recommendations, in the same
 // order. Not part of the self-registering service registry above — it's Spotify's
 // own catalog search, called directly regardless of which service is selected for
@@ -40,4 +44,5 @@ var callables = {};
 callables.getFormValues = getFormValues;
 callables.fetchTopArtists = fetchTopArtists;
 callables.cacheKey = cacheKey;
+callables.getServiceName = getServiceName;
 registeredServices.spotify = callables;
