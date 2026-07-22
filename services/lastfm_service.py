@@ -5,7 +5,7 @@ services/registry.py for the registration contract and how to add another servic
 import requests
 
 from lastfm import PERIOD_CHOICES, get_user_top_artists
-from services.registry import period_choices, top_artists_fns
+from services.registry import DEFAULT_LIMIT_CHOICES, registered_services
 
 
 def get_top_artists(data: dict, context: dict) -> tuple[dict, int]:
@@ -36,5 +36,7 @@ def get_top_artists(data: dict, context: dict) -> tuple[dict, int]:
     return {"artists": artists}, 200
 
 
-top_artists_fns["lastfm"] = get_top_artists
-period_choices["lastfm"] = {"choices": PERIOD_CHOICES, "default": "overall"}
+registered_services["lastfm"] = {
+    "period_choices": {"choices": PERIOD_CHOICES, "default": "overall"},
+    "limit_choices": DEFAULT_LIMIT_CHOICES,
+}

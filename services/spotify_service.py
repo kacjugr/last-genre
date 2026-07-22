@@ -5,7 +5,7 @@ services/registry.py for the registration contract and how to add another servic
 import requests
 import spotipy
 
-from services.registry import period_choices, top_artists_fns
+from services.registry import DEFAULT_LIMIT_CHOICES, registered_services
 from spotify import TIME_RANGE_CHOICES, get_client, get_user_top_artists, is_connected
 
 
@@ -39,5 +39,7 @@ def get_top_artists(data: dict, context: dict) -> tuple[dict, int]:
     }, 200
 
 
-top_artists_fns["spotify"] = get_top_artists
-period_choices["spotify"] = {"choices": TIME_RANGE_CHOICES, "default": "long_term"}
+registered_services["spotify"] = {
+    "period_choices": {"choices": TIME_RANGE_CHOICES, "default": "long_term"},
+    "limit_choices": DEFAULT_LIMIT_CHOICES,
+}

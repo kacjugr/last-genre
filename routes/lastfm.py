@@ -13,8 +13,7 @@ import requests
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from lastfm import get_artist_top_tags, get_chart_top_tags
-from services import lastfm_service  # noqa: F401 — side effect: registers into services.registry
-from services.registry import top_artists_fns
+from services.lastfm_service import get_top_artists
 
 lastfm_bp = Blueprint("lastfm", __name__, url_prefix="/lastfm")
 
@@ -23,7 +22,7 @@ lastfm_bp = Blueprint("lastfm", __name__, url_prefix="/lastfm")
 def top_artists():
     data = request.get_json(silent=True) or {}
     context = {"lastfm_api_key": os.environ.get("LASTFM_API_KEY")}
-    body, status = top_artists_fns["lastfm"](data, context)
+    body, status = get_top_artists(data, context)
     return jsonify(body), status
 
 

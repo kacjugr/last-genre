@@ -1,8 +1,8 @@
 """Every /spotify/* route, plus the OAuth plumbing behind it, isolated in a Flask
 Blueprint so app.py — and the /lastfm/* and other basic routes living there — never
-need to import spotify.py or know how Spotify's OAuth flow works. app.py's only
-window into this file is get_connection_status(), used to render the service-toggle
-UI in index().
+need to import spotify.py or know how Spotify's OAuth flow works. get_connection_status()
+is registered into registered_services["spotify"]["get_conn_status"] rather than
+imported by name — see services/registry.py for why this key is optional per service.
 """
 
 import os
@@ -12,8 +12,8 @@ import requests
 import spotipy
 from flask import Blueprint, jsonify, redirect, request, session, url_for
 
-from services import spotify_service  # noqa: F401 — side effect: registers into services.registry
-from services.registry import top_artists_fns
+from services.registry import registered_services
+from services.spotify_service import get_top_artists
 from spotify import (
     TOKEN_SESSION_KEY,
     get_client,
@@ -40,16 +40,15 @@ def _oauth():
 
 
 def get_connection_status() -> dict:
-    """The only thing the rest of the app needs to know about Spotify: whether the
-    current session is connected, the display name to show if so, and any OAuth
-    error to surface (set via the ?spotify_error= redirect from /callback)."""
     oauth = _oauth()
-    connected = bool(oauth and is_connected(oauth))
     return {
-        "connected": connected,
+        "connected": bool(oauth and is_connected(oauth)),
         "display_name": session.get("spotify_display_name") or "",
-        "error": request.args.get("spotify_error"),
+        "error": request.args.get("spotify_error"),  # set via the ?spotify_error= redirect from /callback
     }
+
+
+registered_services["spotify"]["get_conn_status"] = get_connection_status
 
 
 @spotify_bp.route("/login", methods=["GET"])
@@ -109,7 +108,7 @@ def top_artists():
         "spotify_oauth": _oauth(),
         "spotify_display_name": session.get("spotify_display_name") or "your Spotify account",
     }
-    body, status = top_artists_fns["spotify"](data, context)
+    body, status = get_top_artists(data, context)
     return jsonify(body), status
 
 

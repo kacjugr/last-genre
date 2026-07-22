@@ -10,8 +10,8 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 
 from gemini import ask_gemini_with_retry_streaming, build_gemini_prompt
 from routes.lastfm import lastfm_bp
-from routes.spotify import get_connection_status, spotify_bp
-from services.registry import period_choices
+from routes.spotify import spotify_bp
+from services.registry import registered_services
 
 load_dotenv()
 
@@ -20,16 +20,27 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 app.register_blueprint(lastfm_bp)
 app.register_blueprint(spotify_bp)
 
-LIMIT_CHOICES = {"choices": [10, 25, 50, 100, 250, 500], "default": 50}
-
 
 @app.route("/", methods=["GET"])
 def index():
+    # period_choices genuinely differs per service, so index.html loops over all of
+    # them. limit_choices doesn't, so we just take it from the first registered service.
+    period_choices = {service: info["period_choices"] for service, info in registered_services.items()}
+    limit_choices = next(iter(registered_services.values()))["limit_choices"]
+
+    # Only services with OAuth capabilites register a get_conn_status (see services/registry.py) 
+    # Services without the OAuth concept won't appear here.
+    conn_statuses = {
+        service: info["get_conn_status"]()
+        for service, info in registered_services.items()
+        if "get_conn_status" in info
+    }
+
     return render_template(
         "index.html",
         period_choices=period_choices,
-        limit_choices=LIMIT_CHOICES,
-        spotify_status=get_connection_status(),
+        limit_choices=limit_choices,
+        conn_statuses=conn_statuses,
     )
 
 

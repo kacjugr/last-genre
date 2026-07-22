@@ -85,12 +85,12 @@
 
   <div class="results-grid" id="results-grid">
     <div>
-      <div class="service-toggle" id="service-toggle" role="group" aria-label="Data source" data-spotify-connected="{{ 'true' if spotify_status.connected else 'false' }}" data-spotify-display-name="{{ spotify_status.display_name }}">
+      <div class="service-toggle" id="service-toggle" role="group" aria-label="Data source" data-spotify-connected="{{ 'true' if conn_statuses.spotify.connected else 'false' }}" data-spotify-display-name="{{ conn_statuses.spotify.display_name }}">
         <button type="button" class="active" data-service="lastfm">Last.fm</button>
         <button type="button" data-service="spotify">Spotify</button>
       </div>
       <div id="fetch-error" class="error" style="display:none;"></div>
-      <div id="spotify-error" class="error"{% if not spotify_status.error %} style="display:none;"{% endif %}>{{ spotify_status.error or '' }}</div>
+      <div id="spotify-error" class="error"{% if not conn_statuses.spotify.error %} style="display:none;"{% endif %}>{{ conn_statuses.spotify.error or '' }}</div>
       <div id="spotify-connect" style="display:none;">
         <p>Connect your Spotify account to fetch your top artists.</p>
         <a href="/spotify/login"><button type="button">Connect Spotify</button></a>
